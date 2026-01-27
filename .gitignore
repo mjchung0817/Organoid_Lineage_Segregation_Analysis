@@ -1,0 +1,49 @@
+# macOS system files
+.DS_Store
+
+# Data files (unpublished lab data - DO NOT commit)
+*.csv
+*.xlsx
+*.parquet
+
+# Output directories (generated results)
+Analysis_Output_*/
+Spatial_Analysis_Output_*/
+Spatial_Plots_*/
+Ex1_vs_Ex3_*/
+Ex3_Delta_*/
+Ex3_Dual_Lineage_*/
+Ex3_Final_SE_Plots/
+
+# Experiment data directories (raw cell coordinate data)
+GATA6-HA_Rep1-3*/
+GATA-HA_Rep1-3*/
+GATA-HA-BMP4+Wnt5a_Ex3/
+GATA-HA-Ex2_high_copy_num/
+GATA-HA-Ex2_low_copy_num/
+
+# Images (generated plots from unpublished data)
+*.png
+*.jpg
+
+# VSCode workspace
+*.code-workspace
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# Virtual environments
+venv/
+env/
+.env
+
+# Data directories (for restructured layout)
+data/
+results/
