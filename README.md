@@ -119,10 +119,7 @@ pip install -r requirements.txt
   - Ex2: High vs low copy number comparison (3 replicates each)
   - Ex3: BMP4 + Wnt5a additive conditions (3 replicates)
 
-## License
-
-[Add your license here]
 
 ## Contact
 
-[Add your contact information or lab website]
+mchung98@gatech.edu
