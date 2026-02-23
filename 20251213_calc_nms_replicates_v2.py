@@ -1,329 +1,3 @@
-# import os
-# import pandas as pd
-# import numpy as np
-# import matplotlib.pyplot as plt
-# import seaborn as sns
-# from scipy.spatial import KDTree
-
-# # ==============================================================================
-# # 1. CONFIGURATION
-# # ==============================================================================
-# root_folder = "data/GATA6-HA_Rep1-3/"
-# RADIUS = 100.0
-
-# # ==============================================================================
-# # 2. MATH FUNCTION
-# # ==============================================================================
-# def calculate_metrics(df, radius=30.0):
-#     if 'cell_type_dapi_adusted' not in df.columns:
-#         return None, None, None, None
-        
-#     ref_df = df[df['cell_type_dapi_adusted'] == 2.0]    # Endoderm
-#     target_df = df[df['cell_type_dapi_adusted'] == 3.0] # Mesoderm
-    
-#     if len(ref_df) < 10 or len(target_df) < 10:
-#         return None, None, None, None
-
-#     # Calculate Counts
-#     n_endo = len(ref_df)
-#     n_meso = len(target_df)
-
-#     # --- ABUNDANCE METRIC ---
-#     # Formula: Endo / (Endo + Meso)
-#     pct_endo = n_endo / (n_endo + n_meso)
-
-#     # --- SPATIAL PREP ---
-#     endo_coords = ref_df[['X', 'Y', 'Z']].values
-#     meso_coords = target_df[['X', 'Y', 'Z']].values
-#     endo_tree = KDTree(endo_coords)
-#     meso_tree = KDTree(meso_coords)
-
-#     # ==========================================
-#     # CALCULATION 1: NMS with respect to ENDODERM
-#     # (How many Meso neighbors does an Endo cell have?)
-#     # ==========================================
-#     global_ratio_endo = n_meso / n_endo
-    
-#     neighbors_meso_around_endo = meso_tree.query_ball_point(endo_coords, r=radius)
-#     count_meso_around_endo = sum([len(n) for n in neighbors_meso_around_endo])
-
-#     neighbors_endo_around_endo = endo_tree.query_ball_point(endo_coords, r=radius)
-#     count_endo_around_endo = sum([len(n) - 1 for n in neighbors_endo_around_endo]) # -1 to exclude self
-
-#     if count_endo_around_endo == 0:
-#         nms_endo = 0.0
-#     else:
-#         raw_score = count_meso_around_endo / count_endo_around_endo
-#         nms_endo = raw_score / global_ratio_endo
-
-#     # ==========================================
-#     # CALCULATION 2: NMS with respect to MESODERM
-#     # (How many Endo neighbors does a Meso cell have?)
-#     # ==========================================
-#     global_ratio_meso = n_endo / n_meso
-
-#     neighbors_endo_around_meso = endo_tree.query_ball_point(meso_coords, r=radius)
-#     count_endo_around_meso = sum([len(n) for n in neighbors_endo_around_meso])
-
-#     neighbors_meso_around_meso = meso_tree.query_ball_point(meso_coords, r=radius)
-#     count_meso_around_meso = sum([len(n) - 1 for n in neighbors_meso_around_meso])
-
-#     if count_meso_around_meso == 0:
-#         nms_meso = 0.0
-#     else:
-#         raw_score_meso = count_endo_around_meso / count_meso_around_meso
-#         nms_meso = raw_score_meso / global_ratio_meso
-
-#     return nms_endo, nms_meso, pct_endo, global_ratio_endo
-
-# # ==============================================================================
-# # 3. BATCH PROCESSING
-# # ==============================================================================
-# results_list = []
-# print(f"Scanning for files in: {os.path.abspath(root_folder)}...")
-
-# for root, dirs, files in os.walk(root_folder):
-#     for file in files:
-#         if "dox" in file and file.endswith(".csv"):
-#             try:
-#                 dox_str = file.split('dox')[0]
-#                 dox_conc = int(dox_str)
-#             except ValueError:
-#                 continue
-
-#             try:
-#                 df = pd.read_csv(os.path.join(root, file))
-#                 nms_e, nms_m, pct_endo, _ = calculate_metrics(df, radius=RADIUS)
-                
-#                 if nms_e is not None:
-#                     results_list.append({
-#                         'Dox Concentration': dox_conc,
-#                         'NMS_Endo': nms_e,
-#                         'NMS_Meso': nms_m,
-#                         'Pct_Endoderm': pct_endo,
-#                         'Replicate': file
-#                     })
-#                     print(f"  [OK] {file}: NMS(E)={nms_e:.2f}, NMS(M)={nms_m:.2f}, %Endo={pct_endo:.2%}")
-#                 else:
-#                     print(f"  [SKIP] {file}: Not enough cells.")
-#             except Exception as e:
-#                 print(f"  [ERROR] {file}: {e}")
-
-# # ==============================================================================
-# # 4. VISUALIZATION (FIXED OVERLAP)
-# # ==============================================================================
-# if len(results_list) > 0:
-#     final_df = pd.DataFrame(results_list)
-#     final_df = final_df.sort_values('Dox Concentration')
-    
-#     final_df.to_csv("summary_spatial_dual_nms.csv", index=False)
-#     print("\nData saved to 'summary_spatial_dual_nms.csv'")
-
-#     # Create Figure
-#     fig, ax1 = plt.subplots(figsize=(12, 8)) # Increased Height for Bottom Legend
-
-#     # --- LEFT AXIS (Blue/Cyan): Spatial Segregation ---
-#     sns.lineplot(
-#         data=final_df, x='Dox Concentration', y='NMS_Endo',
-#         marker='o', color='#1f77b4', linewidth=2.5, 
-#         err_style='bars', errorbar='se', ax=ax1,
-#         label='NMS (Ref: Endoderm)'
-#     )
-    
-#     sns.lineplot(
-#         data=final_df, x='Dox Concentration', y='NMS_Meso',
-#         marker='^', color='#00bfff', linewidth=2.5, linestyle='--',
-#         err_style='bars', errorbar='se', ax=ax1,
-#         label='NMS (Ref: Mesoderm)'
-#     )
-
-#     ax1.set_ylabel('Normalized Mixing Score (NMS)', color='#1f77b4', fontsize=12, fontweight='bold')
-#     ax1.tick_params(axis='y', labelcolor='#1f77b4')
-#     ax1.set_xlabel('Dox Concentration (ng/mL)', fontsize=12)
-    
-#     # Random Mixing Line
-#     ax1.axhline(y=1.0, color='gray', linestyle=':', alpha=0.6, label='Random Mixing (1.0)')
-
-#     # --- RIGHT AXIS (Orange): Cell Fate Abundance ---
-#     ax2 = ax1.twinx() 
-#     sns.lineplot(
-#         data=final_df, x='Dox Concentration', y='Pct_Endoderm',
-#         marker='s', color='#ff7f0e', linewidth=2.5,
-#         err_style='bars', errorbar='se', ax=ax2,
-#         label='% Endoderm Abundance'
-#     )
-    
-#     # Formula in title
-#     ax2.set_ylabel('Proportion of Endoderm Cells\n(Endo / [Endo + Meso])', 
-#                    color='#ff7f0e', fontsize=12, fontweight='bold')
-#     ax2.tick_params(axis='y', labelcolor='#ff7f0e')
-#     ax2.set_ylim(0, 1.0) 
-
-#     # --- FORMATTING ---
-#     ax1.set_xscale('symlog', linthresh=10)
-#     ax1.set_xlim(left=-5)
-    
-#     # --- FIX LEGEND OVERLAP (Move to Bottom) ---
-#     lines_1, labels_1 = ax1.get_legend_handles_labels()
-#     lines_2, labels_2 = ax2.get_legend_handles_labels()
-    
-#     # Position: Upper Center relative to the ANCHOR, which is placed BELOW the plot (-0.15)
-#     ax1.legend(lines_1 + lines_2, labels_1 + labels_2, 
-#                loc='upper center', 
-#                bbox_to_anchor=(0.5, -0.12), # Moves legend below the X-axis
-#                ncol=3, # Spreads items horizontally
-#                frameon=False, fontsize=11)
-    
-#     if ax2.get_legend(): ax2.get_legend().remove()
-
-#     plt.title(f'Spatial Patterning vs. Cell Fate Abundance (Radius {RADIUS}um)', fontsize=16, pad=20)
-#     plt.grid(True, alpha=0.3)
-    
-#     # Use constrained_layout to automatically make space for the bottom legend
-#     fig.set_layout_engine('constrained')
-    
-#     plt.show()
-
-# else:
-#     print("No valid data found.")
-
-
-
-
-
-
-# ##########################################
-# ##Experiment 3 data
-# import os
-# import pandas as pd
-# import numpy as np
-# import matplotlib.pyplot as plt
-# import seaborn as sns
-# import re
-# from scipy.spatial import KDTree
-
-# # ==============================================================================
-# # 1. CONFIGURATION
-# # ==============================================================================
-# # Point this to your Experiment 3 folder
-# root_folder = "data/GATA-HA-BMP4+Wnt5a_Ex3"
-# RADIUS = 100.0
-
-# # ==============================================================================
-# # 2. METRIC ENGINE (Dual-NMS + % Endo)
-# # ==============================================================================
-# def calculate_metrics(df, radius=100.0):
-#     # Flexible typo handling
-#     target_col = 'cell_type_dapi_adjusted' if 'cell_type_dapi_adjusted' in df.columns else 'cell_type_dapi_adusted'
-#     if target_col not in df.columns: return None, None, None
-
-#     ref_df = df[df[target_col] == 2.0]    # Endoderm
-#     target_df = df[df[target_col] == 3.0] # Mesoderm
-    
-#     if len(ref_df) < 10 or len(target_df) < 10:
-#         return None, None, None
-
-#     n_endo, n_meso = len(ref_df), len(target_df)
-#     pct_endo = n_endo / (n_endo + n_meso)
-
-#     e_coords, m_coords = ref_df[['X', 'Y', 'Z']].values, target_df[['X', 'Y', 'Z']].values
-#     e_tree, m_tree = KDTree(e_coords), KDTree(m_coords)
-
-#     # NMS (Ref: Endoderm)
-#     n_m_around_e = sum([len(n) for n in m_tree.query_ball_point(e_coords, r=radius)])
-#     n_e_around_e = sum([len(n)-1 for n in e_tree.query_ball_point(e_coords, r=radius)])
-#     nms_e = (n_m_around_e / n_e_around_e) / (n_meso / n_endo) if n_e_around_e > 0 else 0
-
-#     # NMS (Ref: Mesoderm)
-#     n_e_around_m = sum([len(n) for n in e_tree.query_ball_point(m_coords, r=radius)])
-#     n_m_around_m = sum([len(n)-1 for n in m_tree.query_ball_point(m_coords, r=radius)])
-#     nms_m = (n_e_around_m / n_m_around_m) / (n_endo / n_meso) if n_m_around_m > 0 else 0
-
-#     return nms_e, nms_m, pct_endo
-
-# # ==============================================================================
-# # 3. BATCH PROCESSING FOR EXP 3
-# # ==============================================================================
-# results_list = []
-# for root, dirs, files in os.walk(root_folder):
-#     for file in files:
-#         if "dox" in file and file.endswith(".csv"):
-#             # Parse Metadata
-#             dose = int(re.search(r"(\d+)dox", file).group(1)) if re.search(r"(\d+)dox", file) else 0
-#             # Normalize condition case (Wnt5a -> WNT5A)
-#             cond = re.search(r"\+(.+?)_", file).group(1).upper() if re.search(r"\+(.+?)_", file) else "BASAL"
-            
-#             try:
-#                 df = pd.read_csv(os.path.join(root, file))
-#                 nms_e, nms_m, pct_e = calculate_metrics(df, radius=RADIUS)
-#                 if nms_e is not None:
-#                     results_list.append({
-#                         'Dose': dose, 'Condition': cond,
-#                         'NMS_Endo': nms_e, 'NMS_Meso': nms_m, 'Pct_Endo': pct_e,
-#                         'Replicate': os.path.basename(root)
-#                     })
-#             except Exception as e: print(f"Error {file}: {e}")
-
-# master_df = pd.DataFrame(results_list).sort_values('Dose')
-
-# # 4. LINE PLOT VISUALIZATION (Condition vs. Basal Overlay)
-# # ==============================================================================
-# # Separate the Basal data to use as an overlay
-# basal_subset = master_df[master_df['Condition'] == "BASAL"]
-# signaling_conditions = [c for c in master_df['Condition'].unique() if c != "BASAL"]
-
-# for cond in signaling_conditions:
-#     cond_subset = master_df[master_df['Condition'] == cond]
-#     fig, ax1 = plt.subplots(figsize=(12, 7))
-
-#     # --- LEFT AXIS: Spatial Segregation (NMS) ---
-#     # 1. Plot the Signaling Condition (Solid Lines)
-#     sns.lineplot(data=cond_subset, x='Dose', y='NMS_Endo', marker='o', color='#d62728', 
-#                  err_style='bars', errorbar='se', ax=ax1, label=f'NMS Endo ({cond})')
-#     sns.lineplot(data=cond_subset, x='Dose', y='NMS_Meso', marker='^', color='#1f77b4', 
-#                  err_style='bars', errorbar='se', ax=ax1, label=f'NMS Meso ({cond})')
-    
-#     # 2. Plot the Basal Control (Dashed Gray Lines)
-#     sns.lineplot(data=basal_subset, x='Dose', y='NMS_Endo', color='gray', linestyle='--', 
-#                  alpha=0.5, errorbar=None, ax=ax1, label='NMS Endo (Basal)')
-#     sns.lineplot(data=basal_subset, x='Dose', y='NMS_Meso', color='darkgray', linestyle=':', 
-#                  alpha=0.5, errorbar=None, ax=ax1, label='NMS Meso (Basal)')
-
-#     ax1.set_ylabel('Mixing Score (NMS)', fontsize=12, fontweight='bold')
-#     ax1.set_xlabel('Dox Concentration (ng/mL)', fontsize=12)
-#     ax1.axhline(y=1.0, color='black', linestyle='-', alpha=0.2) # Random Mixing Baseline
-
-#     # --- RIGHT AXIS: Abundance (% Endo) ---
-#     ax2 = ax1.twinx()
-#     # 1. Plot Signaling Abundance
-#     sns.lineplot(data=cond_subset, x='Dose', y='Pct_Endo', marker='s', color='#ff7f0e', 
-#                  err_style='bars', errorbar='se', ax=ax2, label=f'% Endo ({cond})')
-#     # 2. Plot Basal Abundance
-#     sns.lineplot(data=basal_subset, x='Dose', y='Pct_Endo', color='#ffcc80', linestyle='--', 
-#                  alpha=0.5, errorbar=None, ax=ax2, label='% Endo (Basal)')
-    
-#     ax2.set_ylabel('Proportion of Endoderm Cells', color='#ff7f0e', fontsize=12, fontweight='bold')
-#     ax2.set_ylim(0, 1.0)
-
-#     # --- AXIS SCALING & LIMITS ---
-#     ax1.set_xscale('symlog', linthresh=10) 
-#     ax1.set_xlim(left=0) # Starts the plot exactly at 0 Dox
-    
-#     # Clean up legends
-#     lines_1, labels_1 = ax1.get_legend_handles_labels()
-#     lines_2, labels_2 = ax2.get_legend_handles_labels()
-#     ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper center', 
-#                bbox_to_anchor=(0.5, -0.15), ncol=3, frameon=False, fontsize=9)
-#     if ax2.get_legend(): ax2.get_legend().remove()
-
-#     plt.title(f'Synergy Analysis: {cond} vs. Basal Control', fontsize=15, pad=20)
-#     plt.tight_layout()
-#     plt.show()
-
-
-
-##EXP3: dot plot of NMS with the 4 categories (CTRL vs +BMP4 vs +Wnt5a vs +BMP4+Wnt5a) for each condition across dox concnetrations
-
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -331,102 +5,261 @@ import seaborn as sns
 import os
 import glob
 import re
+import argparse
 from scipy.spatial import KDTree
 
-# ==============================================================================
-# 1. CONFIGURATION (Dual-Experiment Access)
-# ==============================================================================
-BASE_DIR_EX1 = "data/GATA-HA_Rep1-3_Ex1"
-BASE_DIR_EX3 = "data/GATA-HA-BMP4+Wnt5a_Ex3"
-
-RADIUS = 100.0
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ==============================================================================
-# 2. METRIC ENGINE
+# DATASET MAPPING
+# ==============================================================================
+DATASET_MAP = {
+    'exp1': 'GATA-HA_Rep1-3_Ex1',
+    'exp2_high_cn': 'GATA-HA-Ex2_high_copy_num',
+    'exp2_low_cn': 'GATA-HA-Ex2_low_copy_num',
+    'exp3': 'GATA-HA-BMP4+Wnt5a_Ex3'
+}
+
+# Multi-radius analysis parameters
+RADII = [30.0, 50.0, 100.0]
+
+# ==============================================================================
+# HELPER: FILTER TO FIRST 3 ORGANOIDS PER REPLICATE PER CONDITION
+# ==============================================================================
+def filter_first_3_organoids(file_list):
+    """
+    Group files by replicate and condition, keep only first 3 organoids numerically.
+    """
+    grouped = {}
+    for fpath in file_list:
+        fname = os.path.basename(fpath)
+        replicate = os.path.basename(os.path.dirname(fpath))
+
+        dox_match = re.search(r'(\d+)dox', fname)
+        if not dox_match:
+            continue
+        dox = int(dox_match.group(1))
+
+        org_match = re.search(r'_(\d+)\.csv$', fname)
+        if not org_match:
+            continue
+        org_num = int(org_match.group(1))
+
+        key = (replicate, dox)
+        if key not in grouped:
+            grouped[key] = []
+        grouped[key].append((org_num, fpath))
+
+    filtered = []
+    for key, files in grouped.items():
+        files_sorted = sorted(files, key=lambda x: x[0])
+        filtered.extend([fpath for _, fpath in files_sorted[:3]])
+
+    return filtered
+
+# ==============================================================================
+# METRIC ENGINE (UPDATED: Each lineage vs ALL other cell types)
 # ==============================================================================
 def calculate_metrics(df, radius=100.0):
     target_col = 'cell_type_dapi_adjusted' if 'cell_type_dapi_adjusted' in df.columns else 'cell_type_dapi_adusted'
     if target_col not in df.columns: return None
 
-    ref_df = df[df[target_col] == 2.0]    # Endo
-    target_df = df[df[target_col] == 3.0] # Meso
-    
-    if len(ref_df) < 10 or len(target_df) < 10: return None
+    # Restrict analysis to Endo/Meso only (no triple-negative/pluripotent tracking)
+    lineage_df = df[df[target_col].isin([2.0, 3.0])].copy()
+    endo_subset = lineage_df[lineage_df[target_col] == 2.0]           # Endoderm
+    meso_subset = lineage_df[lineage_df[target_col] == 3.0]           # Mesoderm
+    non_endo_subset = lineage_df[lineage_df[target_col] != 2.0]       # Meso only after filtering
+    non_meso_subset = lineage_df[lineage_df[target_col] != 3.0]       # Endo only after filtering
 
-    e_coords, m_coords = ref_df[['X', 'Y', 'Z']].values, target_df[['X', 'Y', 'Z']].values
-    e_tree, m_tree = KDTree(e_coords), KDTree(m_coords)
+    if len(endo_subset) < 10 or len(non_endo_subset) < 10:
+        nms_e = None
+    else:
+        nms_e = 0
 
-    # NMS (Ref: Endoderm)
-    n_m_around_e = sum([len(n) for n in m_tree.query_ball_point(e_coords, r=radius)])
-    n_e_around_e = sum([len(n)-1 for n in e_tree.query_ball_point(e_coords, r=radius)])
-    nms_e = (n_m_around_e / n_e_around_e) / (len(target_df) / len(ref_df)) if n_e_around_e > 0 else 0
+    if len(meso_subset) < 10 or len(non_meso_subset) < 10:
+        nms_m = None
+    else:
+        nms_m = 0
 
-    # NMS (Ref: Mesoderm)
-    n_e_around_m = sum([len(n) for n in e_tree.query_ball_point(m_coords, r=radius)])
-    n_m_around_m = sum([len(n)-1 for n in m_tree.query_ball_point(m_coords, r=radius)])
-    nms_m = (n_e_around_m / n_m_around_m) / (len(ref_df) / len(target_df)) if n_m_around_m > 0 else 0
+    # Calculate NMS (Ref: Endoderm vs ALL other cell types)
+    if len(endo_subset) >= 10 and len(non_endo_subset) >= 10:
+        e_coords = endo_subset[['X', 'Y', 'Z']].values
+        non_e_coords = non_endo_subset[['X', 'Y', 'Z']].values
+        e_tree = KDTree(e_coords)
+        non_e_tree = KDTree(non_e_coords)
+
+        n_non_e_around_e = sum([len(n) for n in non_e_tree.query_ball_point(e_coords, r=radius)])
+        n_e_around_e = sum([len(n)-1 for n in e_tree.query_ball_point(e_coords, r=radius)])
+        nms_e = (n_non_e_around_e / n_e_around_e) / (len(non_endo_subset) / len(endo_subset)) if n_e_around_e > 0 else 0
+
+    # Calculate NMS (Ref: Mesoderm vs ALL other cell types)
+    if len(meso_subset) >= 10 and len(non_meso_subset) >= 10:
+        m_coords = meso_subset[['X', 'Y', 'Z']].values
+        non_m_coords = non_meso_subset[['X', 'Y', 'Z']].values
+        m_tree = KDTree(m_coords)
+        non_m_tree = KDTree(non_m_coords)
+
+        n_non_m_around_m = sum([len(n) for n in non_m_tree.query_ball_point(m_coords, r=radius)])
+        n_m_around_m = sum([len(n)-1 for n in m_tree.query_ball_point(m_coords, r=radius)])
+        nms_m = (n_non_m_around_m / n_m_around_m) / (len(non_meso_subset) / len(meso_subset)) if n_m_around_m > 0 else 0
+
+    # Return None if either metric couldn't be calculated
+    if nms_e is None or nms_m is None:
+        return None
 
     return {'NMS_Endo': nms_e, 'NMS_Meso': nms_m}
 
 # ==============================================================================
-# 3. CROSS-EXPERIMENT DATA RETRIEVAL
+# CROSS-EXPERIMENT DATA RETRIEVAL (Multi-Radius)
 # ==============================================================================
-results = []
+def run_comparison(baseline_path, baseline_label, treatment_path, treatment_label, output_dir):
+    # Process data for each radius value
+    for RADIUS in RADII:
+        print(f"\n{'='*80}")
+        print(f"PROCESSING RADIUS: {RADIUS} μm")
+        print(f"{'='*80}\n")
 
-# Logic: Pull CTRL from Ex1, Pull Additives from Ex3
-for exp_tag, base_path in [('Ex1', BASE_DIR_EX1), ('Ex3', BASE_DIR_EX3)]:
-    files = glob.glob(os.path.join(base_path, "**/*.csv"), recursive=True)
-    for f in files:
-        fname = os.path.basename(f)
-        dose = int(re.search(r"(\d+)dox", fname).group(1)) if re.search(r"(\d+)dox", fname) else 0
-        
-        # Determine Condition
-        if exp_tag == 'Ex1':
-            cond = "CTRL"
-        else:
+        results = []
+
+        # Process baseline experiment
+        baseline_files = glob.glob(os.path.join(baseline_path, "**/*.csv"), recursive=True)
+        baseline_files = filter_first_3_organoids(baseline_files)
+        print(f"Baseline ({baseline_label}): {len(baseline_files)} organoids")
+
+        for f in baseline_files:
+            fname = os.path.basename(f)
+            dose = int(re.search(r"(\d+)dox", fname).group(1)) if re.search(r"(\d+)dox", fname) else 0
+
+            # We only need these specific doses
+            if dose in [0, 100, 1000]:
+                m = calculate_metrics(pd.read_csv(f), radius=RADIUS)
+                if m:
+                    m.update({'Dose': dose, 'Condition': 'CTRL', 'Replicate': os.path.basename(os.path.dirname(f))})
+                    results.append(m)
+
+        # Process treatment experiment
+        treatment_files = glob.glob(os.path.join(treatment_path, "**/*.csv"), recursive=True)
+        treatment_files = filter_first_3_organoids(treatment_files)
+        print(f"Treatment ({treatment_label}): {len(treatment_files)} organoids")
+
+        for f in treatment_files:
+            fname = os.path.basename(f)
+            dose = int(re.search(r"(\d+)dox", fname).group(1)) if re.search(r"(\d+)dox", fname) else 0
+
+            # Determine Condition from filename
             cond_match = re.search(r"\+(.+?)_", fname)
             cond = cond_match.group(1).upper() if cond_match else "BASAL"
-        
-        # We only need these specific doses
-        if dose in [0, 100, 1000]:
-            m = calculate_metrics(pd.read_csv(f), radius=RADIUS)
-            if m:
-                m.update({'Dose': dose, 'Condition': cond, 'Replicate': os.path.basename(os.path.dirname(f))})
-                results.append(m)
 
-df_plot = pd.DataFrame(results)
-category_order = ["CTRL", "BMP4", "WNT5A", "BMP4+WNT5A"]
+            # We only need these specific doses
+            if dose in [0, 100, 1000]:
+                m = calculate_metrics(pd.read_csv(f), radius=RADIUS)
+                if m:
+                    m.update({'Dose': dose, 'Condition': cond, 'Replicate': os.path.basename(os.path.dirname(f))})
+                    results.append(m)
+
+        df_plot = pd.DataFrame(results)
+        if df_plot.empty:
+            print(f"No valid Endo/Meso NMS data at radius {RADIUS} μm; skipping plots.")
+            continue
+
+        # Save organoid-level datapoints for this radius
+        raw_csv = os.path.join(output_dir, f"NMS_Radius_{int(RADIUS)}um_Organoid_Level.csv")
+        df_plot.to_csv(raw_csv, index=False)
+        print(f"✓ Data saved: {raw_csv}")
+
+        # Determine category order based on available conditions
+        all_conditions = df_plot['Condition'].unique()
+        category_order = ['CTRL']
+        for cond in ['BMP4', 'WNT5A', 'BMP4+WNT5A', 'BASAL']:
+            if cond in all_conditions:
+                category_order.append(cond)
+
+        # ==============================================================================
+        # DOT PLOT VISUALIZATION (DISTINCT COLORS) - For this radius
+        # ==============================================================================
+        sns.set_context("talk", font_scale=1.1)
+        # High-contrast palette: Black (0), Blue (100), Orange/Yellow (1000)
+        custom_palette = {0: "#222222", 100: "#1f77b4", 1000: "#ffcc00"}
+
+        for metric in ["NMS_Endo", "NMS_Meso"]:
+            fig, ax = plt.subplots(figsize=(15, 8))
+
+            # 1. Stripplot for individual organoids (with jitter)
+            sns.stripplot(data=df_plot, x='Condition', y=metric, hue='Dose', palette=custom_palette,
+                          order=category_order, dodge=True, alpha=0.6, size=9, ax=ax)
+
+            # 2. Pointplot for Mean + Standard Error (SE)
+            sns.pointplot(data=df_plot, x='Condition', y=metric, hue='Dose', palette=custom_palette,
+                          order=category_order, dodge=0.55, join=False, errorbar='se',
+                          markers="D", scale=1.2, ax=ax)
+
+            # --- FORMATTING ---
+            ax.set_title(f"Spatial Segregation: {metric.replace('_', ' ')} (Radius: {RADIUS}μm)\n{treatment_label} vs {baseline_label} Baseline (Each Lineage vs ALL Other Cell Types)", fontweight='bold')
+            ax.set_ylabel("Normalized Mixing Score (NMS)")
+            ax.axhline(1.0, color='gray', linestyle='--', alpha=0.5, label='Random Mixing')
+
+            # Consolidate Legend
+            handles, labels = ax.get_legend_handles_labels()
+            # Ensure we only grab unique dose labels
+            unique_labels = dict(zip(labels, handles))
+            ax.legend(unique_labels.values(), unique_labels.keys(), title="Dox (ng/mL)", loc='upper right', frameon=False)
+
+            sns.despine()
+            plt.tight_layout()
+
+            # Save with radius in filename
+            output_filename = os.path.join(output_dir, f"NMS_{metric}_Radius_{int(RADIUS)}um.png")
+            plt.savefig(output_filename, dpi=300, bbox_inches='tight')
+            print(f"✓ Saved: {output_filename}")
+            plt.close()
+
+        # Save long-form table used directly by plotting
+        plot_long = df_plot.melt(
+            id_vars=['Dose', 'Condition', 'Replicate'],
+            value_vars=['NMS_Endo', 'NMS_Meso'],
+            var_name='Metric',
+            value_name='NMS'
+        )
+        plot_long_csv = os.path.join(output_dir, f"NMS_Radius_{int(RADIUS)}um_Plot_Data_Long.csv")
+        plot_long.to_csv(plot_long_csv, index=False)
+        print(f"✓ Data saved: {plot_long_csv}")
+
+    print(f"\n{'='*80}")
+    print(f"ALL RADII PROCESSED SUCCESSFULLY")
+    print(f"{'='*80}")
 
 # ==============================================================================
-# 4. DOT PLOT VISUALIZATION (DISTINCT COLORS)
+# MAIN EXECUTION
 # ==============================================================================
-sns.set_context("talk", font_scale=1.1)
-# High-contrast palette: Black (0), Blue (100), Orange/Yellow (1000)
-custom_palette = {0: "#222222", 100: "#1f77b4", 1000: "#ffcc00"}
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='NMS Replicates Comparison (Multi-Radius)')
+    parser.add_argument('--baseline', type=str, required=True,
+                        choices=['exp1', 'exp2_high_cn', 'exp2_low_cn', 'exp3'],
+                        help='Baseline experiment dataset')
+    parser.add_argument('--treatment', type=str, required=True,
+                        choices=['exp1', 'exp2_high_cn', 'exp2_low_cn', 'exp3'],
+                        help='Treatment experiment dataset')
+    parser.add_argument('--output-dir', type=str, default='results',
+                        help='Base output directory (default: results)')
 
-for metric in ["NMS_Endo", "NMS_Meso"]:
-    fig, ax = plt.subplots(figsize=(15, 8))
-    
-    # 1. Stripplot for individual organoids (with jitter)
-    sns.stripplot(data=df_plot, x='Condition', y=metric, hue='Dose', palette=custom_palette,
-                  order=category_order, dodge=True, alpha=0.6, size=9, ax=ax)
-    
-    # 2. Pointplot for Mean + Standard Error (SE)
-    sns.pointplot(data=df_plot, x='Condition', y=metric, hue='Dose', palette=custom_palette,
-                  order=category_order, dodge=0.55, join=False, errorbar='se', 
-                  markers="D", scale=1.2, ax=ax)
+    args = parser.parse_args()
 
-    # --- FORMATTING ---
-    ax.set_title(f"Spatial Segregation: {metric.replace('_', ' ')} (Ex3 vs Ex1 Baseline)", fontweight='bold')
-    ax.set_ylabel("Normalized Mixing Score (NMS)")
-    ax.axhline(1.0, color='gray', linestyle='--', alpha=0.5, label='Random Mixing')
-    
-    # Consolidate Legend
-    handles, labels = ax.get_legend_handles_labels()
-    # Ensure we only grab unique dose labels
-    unique_labels = dict(zip(labels, handles))
-    ax.legend(unique_labels.values(), unique_labels.keys(), title="Dox (ng/mL)", loc='upper right', frameon=False)
-    
-    sns.despine()
-    plt.tight_layout()
-    plt.show()
+    # Get dataset paths
+    baseline_mapped = DATASET_MAP[args.baseline]
+    treatment_mapped = DATASET_MAP[args.treatment]
+    baseline_path = baseline_mapped if os.path.isabs(baseline_mapped) else os.path.join(SCRIPT_DIR, baseline_mapped)
+    treatment_path = treatment_mapped if os.path.isabs(treatment_mapped) else os.path.join(SCRIPT_DIR, treatment_mapped)
+
+    # Create output directory
+    output_subdir = f"{args.baseline}_vs_{args.treatment}_nms_comparison"
+    output_path = os.path.join(args.output_dir, output_subdir)
+    os.makedirs(output_path, exist_ok=True)
+
+    print(f"\n{'='*80}")
+    print(f"NMS REPLICATES COMPARISON (MULTI-RADIUS)")
+    print(f"Baseline: {args.baseline} ({baseline_path})")
+    print(f"Treatment: {args.treatment} ({treatment_path})")
+    print(f"Output: {output_path}")
+    print(f"{'='*80}\n")
+
+    run_comparison(baseline_path, args.baseline, treatment_path, args.treatment, output_path)

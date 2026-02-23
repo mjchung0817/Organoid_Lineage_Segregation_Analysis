@@ -1,0 +1,7 @@
+# CN lambda map examples for --cn-map
+
+# Main (exp1, exp2 high, exp2 low)
+exp1:4.5,exp2_high_cn:9,exp2_low_cn:4
+
+# If including exp3 as high-CN proxy
+exp1:4.5,exp2_high_cn:9,exp2_low_cn:4,exp3:9
