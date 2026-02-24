@@ -76,16 +76,18 @@ def save_fold_metrics_plot(df_metrics: pd.DataFrame, out_png: str) -> None:
         return
 
     setup_plot_style()
+    df_plot = df_metrics.copy()
     fig, axes = plt.subplots(1, 2, figsize=(18, 7))
 
-    r2_df = df_metrics.dropna(subset=['R2']).copy()
+    r2_df = df_plot.dropna(subset=['R2']).copy()
     if not r2_df.empty:
         sns.boxplot(
             data=r2_df,
             x='PC',
             y='R2',
             hue='Model',
-            ax=axes[0]
+            ax=axes[0],
+            showfliers=False,
         )
         axes[0].set_title('Fold-Level R2 by PC')
         axes[0].axhline(0.0, linestyle='--', linewidth=1, color='black', alpha=0.6)
@@ -94,11 +96,12 @@ def save_fold_metrics_plot(df_metrics: pd.DataFrame, out_png: str) -> None:
         axes[0].set_visible(False)
 
     sns.boxplot(
-        data=df_metrics,
+        data=df_plot,
         x='PC',
         y='RMSE',
         hue='Model',
-        ax=axes[1]
+        ax=axes[1],
+        showfliers=False,
     )
     axes[1].set_title('Fold-Level RMSE by PC')
     axes[1].set_ylabel('RMSE')
@@ -242,12 +245,12 @@ def save_high_cn_extrapolation_performance_plot(df_extrap: pd.DataFrame, out_png
     if not pc_df.empty:
         sns.barplot(data=pc_df, x='Model', y='R2', hue='PC', ax=axes[0, 0], errorbar=None)
         axes[0, 0].axhline(0.0, linestyle='--', linewidth=1, color='black', alpha=0.7)
-        axes[0, 0].set_title('High-CN Extrapolation: R2 by PC')
+        axes[0, 0].set_title('Custom Holdout: R2 by PC')
         axes[0, 0].set_xlabel('')
         axes[0, 0].tick_params(axis='x', rotation=15)
 
         sns.barplot(data=pc_df, x='Model', y='RMSE', hue='PC', ax=axes[0, 1], errorbar=None)
-        axes[0, 1].set_title('High-CN Extrapolation: RMSE by PC')
+        axes[0, 1].set_title('Custom Holdout: RMSE by PC')
         axes[0, 1].set_xlabel('')
         axes[0, 1].tick_params(axis='x', rotation=15)
     else:
@@ -261,12 +264,12 @@ def save_high_cn_extrapolation_performance_plot(df_extrap: pd.DataFrame, out_png
         ], ignore_index=True)
 
         sns.barplot(data=traj_long, x='Model', y='Value', hue='Metric', ax=axes[1, 0], errorbar=None)
-        axes[1, 0].set_title('High-CN Extrapolation: Trajectory Distance Errors')
+        axes[1, 0].set_title('Custom Holdout: Trajectory Distance Errors')
         axes[1, 0].set_xlabel('')
         axes[1, 0].tick_params(axis='x', rotation=15)
 
         sns.barplot(data=traj_df, x='Model', y='Direction_Angle_Error_Deg', ax=axes[1, 1], errorbar=None)
-        axes[1, 1].set_title('High-CN Extrapolation: Direction Angle Error (deg)')
+        axes[1, 1].set_title('Custom Holdout: Direction Angle Error (deg)')
         axes[1, 1].set_xlabel('')
         axes[1, 1].tick_params(axis='x', rotation=15)
     else:
@@ -278,7 +281,7 @@ def save_high_cn_extrapolation_performance_plot(df_extrap: pd.DataFrame, out_png
         if ax.legend_ is not None:
             ax.legend_.remove()
 
-    plt.suptitle('Low-CN Train -> High-CN Test Performance', y=1.02, fontweight='bold')
+    plt.suptitle('Custom Train/Test Holdout Performance', y=1.02, fontweight='bold')
     plt.tight_layout()
     plt.savefig(out_png, dpi=300, bbox_inches='tight')
     plt.close(fig)
@@ -371,7 +374,64 @@ def save_high_cn_trajectory_plot(
                 fontsize=9, bbox=dict(boxstyle='round', facecolor='white', alpha=0.75, edgecolor='gray')
             )
 
-    plt.suptitle('Low-CN Train -> High-CN Test: Predicted vs True Trajectories', y=1.02, fontweight='bold')
+    plt.suptitle('Custom Train/Test Holdout: Predicted vs True Trajectories', y=1.02, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(out_png, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+
+def save_lor_pc1_1d_trace_plot(df_fold_preds: pd.DataFrame, out_png: str) -> None:
+    if df_fold_preds.empty:
+        return
+    if 'True_PC1' not in df_fold_preds.columns or 'Pred_PC1' not in df_fold_preds.columns:
+        return
+
+    dfl = df_fold_preds[df_fold_preds['Split_Type'].astype(str) == 'LOR'].copy()
+    if dfl.empty:
+        return
+
+    model_order = sorted(dfl['Model'].astype(str).unique())
+    exp_order = sorted(dfl['Experiment'].astype(str).unique())
+    if not model_order or not exp_order:
+        return
+
+    setup_plot_style()
+    fig, axes = plt.subplots(len(model_order), 1, figsize=(14, 4.2 * len(model_order)), squeeze=False)
+    palette = sns.color_palette('tab10', n_colors=len(exp_order))
+    dox_ticks = sorted(pd.to_numeric(dfl['Dox_Concentration'], errors='coerce').dropna().astype(float).unique())
+
+    for r, model in enumerate(model_order):
+        ax = axes[r, 0]
+        mdf = dfl[dfl['Model'].astype(str) == model].copy()
+        if mdf.empty:
+            ax.set_visible(False)
+            continue
+
+        for exp, color in zip(exp_order, palette):
+            edf = mdf[mdf['Experiment'].astype(str) == exp].copy()
+            if edf.empty:
+                continue
+            cent = (
+                edf.groupby('Dox_Concentration', as_index=False)[['True_PC1', 'Pred_PC1']]
+                .mean(numeric_only=True)
+                .sort_values('Dox_Concentration')
+            )
+            dox = pd.to_numeric(cent['Dox_Concentration'], errors='coerce').astype(float).values
+            ax.plot(dox, cent['True_PC1'].values, '-', color=color, linewidth=2.2, alpha=0.95, label=f'{exp} true')
+            ax.plot(dox, cent['Pred_PC1'].values, '--', color=color, linewidth=2.2, alpha=0.95, label=f'{exp} pred')
+
+        ax.axhline(0.0, linestyle=':', linewidth=1, color='black', alpha=0.6)
+        ax.set_title(f'LOR PC1 1D Trace: {model}', fontweight='bold')
+        ax.set_xlabel('Dox Concentration')
+        ax.set_ylabel('PC1 centroid')
+        if dox_ticks:
+            ax.set_xticks(dox_ticks)
+
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc='upper center', ncol=min(4, len(labels)), frameon=True)
+
+    plt.suptitle('LOR Stress Test: PC1 1D Trajectories (True vs Predicted)', y=1.01, fontweight='bold')
     plt.tight_layout()
     plt.savefig(out_png, dpi=300, bbox_inches='tight')
     plt.close(fig)
@@ -552,6 +612,42 @@ def add_probabilistic_cn_inputs(
 ) -> pd.DataFrame:
     df = df_scores.copy()
 
+    # Re-anchor each experiment trajectory at its Dox=0 centroid in PCA space.
+    pc_cols = sorted(
+        [c for c in df.columns if re.fullmatch(r'PC\d+', str(c))],
+        key=lambda c: int(str(c)[2:]),
+    )
+    dox_numeric = pd.to_numeric(df['Dox_Concentration'], errors='coerce').astype(float)
+    if pc_cols:
+        baseline_mask = np.isclose(dox_numeric.values, 0.0, atol=1e-8)
+        if np.any(baseline_mask):
+            origin_df = (
+                df.loc[baseline_mask, ['Experiment'] + pc_cols]
+                .groupby('Experiment', as_index=False)
+                .mean(numeric_only=True)
+            )
+            offset_cols = {pc: f'{pc}_OriginOffset' for pc in pc_cols}
+            origin_df = origin_df.rename(columns=offset_cols)
+            df = df.merge(origin_df, on='Experiment', how='left')
+
+            missing_origin = sorted(
+                df.loc[df[f'{pc_cols[0]}_OriginOffset'].isna(), 'Experiment'].astype(str).unique()
+            )
+            if missing_origin:
+                print(
+                    '[warn] Missing Dox=0 origin for experiments: '
+                    f'{", ".join(missing_origin)}. Leaving those trajectories uncentered.'
+                )
+
+            for pc in pc_cols:
+                off_col = f'{pc}_OriginOffset'
+                df[pc] = df[pc] - df[off_col].fillna(0.0)
+            df = df.drop(columns=[f'{pc}_OriginOffset' for pc in pc_cols])
+        else:
+            print('[warn] No Dox=0 samples found. Skipping PC origin centering.')
+    else:
+        print('[warn] No PC columns detected in frozen scores. Skipping PC origin centering.')
+
     cn_lambda = []
     cn_sample_mean = []
     cn_sample_std = []
@@ -590,11 +686,18 @@ def add_probabilistic_cn_inputs(
     df['CN_Sample_P50'] = cn_sample_p50
     df['CN_Sample_P90'] = cn_sample_p90
 
-    dox = pd.to_numeric(df['Dox_Concentration'], errors='coerce').astype(float)
+    dox = dox_numeric
     df['Dox_Raw'] = dox
     df['Dox_Log1p10'] = np.log10(dox + 1.0)
 
     return df
+
+
+def add_experiment_one_hot_inputs(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+    exp_ohe = pd.get_dummies(df['Experiment'].astype(str), prefix='ExperimentID', dtype=float)
+    exp_ohe = exp_ohe.reindex(sorted(exp_ohe.columns), axis=1)
+    out = pd.concat([df.reset_index(drop=True), exp_ohe.reset_index(drop=True)], axis=1)
+    return out, exp_ohe.columns.tolist()
 
 
 # -----------------------------
@@ -602,10 +705,10 @@ def add_probabilistic_cn_inputs(
 # -----------------------------
 
 def poly_interaction_transform(X: np.ndarray) -> np.ndarray:
-    # Input columns: [Dox_Log1p10, CN_Sample_Mean]
+    # Input columns: [Dox_Log1p10, CN_Sample_Mean, optional nuisance one-hot terms...]
     dox = X[:, 0]
     cn = X[:, 1]
-    return np.column_stack([
+    core = np.column_stack([
         dox,
         dox ** 2,
         dox ** 3,
@@ -613,10 +716,13 @@ def poly_interaction_transform(X: np.ndarray) -> np.ndarray:
         dox * cn,
         (dox ** 2) * cn,
     ])
+    if X.shape[1] > 2:
+        return np.column_stack([core, X[:, 2:]])
+    return core
 
 
-def selected_poly_feature_names() -> List[str]:
-    return [
+def selected_poly_feature_names(extra_feature_names: List[str] | None = None) -> List[str]:
+    names = [
         'Dox_Log1p10',
         'Dox_Log1p10^2',
         'Dox_Log1p10^3',
@@ -624,6 +730,9 @@ def selected_poly_feature_names() -> List[str]:
         'Dox_Log1p10*CN_Sample_Mean',
         'Dox_Log1p10^2*CN_Sample_Mean',
     ]
+    if extra_feature_names:
+        names.extend(extra_feature_names)
+    return names
 
 
 class MultiTargetGAMLike:
@@ -636,23 +745,35 @@ class MultiTargetGAMLike:
         self.alpha = alpha
         self.backend = None
         self.models = []
+        self.fallback_spline = None
+
+    def _build_fallback_design(self, X: np.ndarray, fit: bool) -> np.ndarray:
+        if self.fallback_spline is None:
+            raise RuntimeError('Fallback spline is not initialized.')
+        X_spline = self.fallback_spline.fit_transform(X[:, :2]) if fit else self.fallback_spline.transform(X[:, :2])
+        if X.shape[1] > 2:
+            return np.column_stack([X_spline, X[:, 2:]])
+        return X_spline
 
     def fit(self, X: np.ndarray, Y: np.ndarray):
         self.models = []
+        self.fallback_spline = None
         try:
-            from pygam import LinearGAM, s, te  # type: ignore
+            from pygam import LinearGAM, l, s, te  # type: ignore
             self.backend = 'pygam'
+            terms = s(0) + s(1) + te(0, 1)
+            for i in range(2, X.shape[1]):
+                terms += l(i)
             for i in range(Y.shape[1]):
-                model = LinearGAM(s(0) + s(1) + te(0, 1)).fit(X, Y[:, i])
+                model = LinearGAM(terms).fit(X, Y[:, i])
                 self.models.append(model)
         except Exception:
             self.backend = 'spline_ridge_fallback'
+            self.fallback_spline = SplineTransformer(n_knots=self.n_knots, degree=3, include_bias=False)
+            X_design = self._build_fallback_design(X, fit=True)
             for i in range(Y.shape[1]):
-                model = Pipeline([
-                    ('spline', SplineTransformer(n_knots=self.n_knots, degree=3, include_bias=False)),
-                    ('ridge', Ridge(alpha=self.alpha)),
-                ])
-                model.fit(X, Y[:, i])
+                model = Ridge(alpha=self.alpha)
+                model.fit(X_design, Y[:, i])
                 self.models.append(model)
 
         return self
@@ -660,7 +781,11 @@ class MultiTargetGAMLike:
     def predict(self, X: np.ndarray) -> np.ndarray:
         if not self.models:
             raise RuntimeError('Model not fit yet.')
-        preds = [m.predict(X) for m in self.models]
+        if self.backend == 'spline_ridge_fallback':
+            X_design = self._build_fallback_design(X, fit=False)
+            preds = [m.predict(X_design) for m in self.models]
+        else:
+            preds = [m.predict(X) for m in self.models]
         return np.column_stack(preds)
 
 
@@ -919,6 +1044,11 @@ def run(args):
     before_n = len(df_model)
     df_model = df_model.dropna(subset=['CN_Lambda', 'CN_Sample_Mean', 'Dox_Log1p10']).copy()
     print(f'Dropped rows without CN mapping: {before_n - len(df_model)}')
+    df_model, exp_ohe_cols = add_experiment_one_hot_inputs(df_model)
+    if exp_ohe_cols:
+        print(f'Added nuisance one-hot inputs: {", ".join(exp_ohe_cols)}')
+    else:
+        print('[warn] No nuisance one-hot inputs were created.')
 
     target_pcs = [f'PC{i+1}' for i in range(args.target_pcs)]
     for pc in target_pcs:
@@ -929,8 +1059,10 @@ def run(args):
     key_cols = ['File', 'Experiment', 'Replicate', 'Dox_Concentration']
     df_obs_feat = frozen.processed_features[key_cols + frozen.feature_order].copy()
 
-    # Core base input matrix
-    X_base = df_model[['Dox_Log1p10', 'CN_Sample_Mean']].values
+    # Core model input matrix: biology terms + nuisance experiment IDs.
+    input_feature_cols = ['Dox_Log1p10', 'CN_Sample_Mean'] + exp_ohe_cols
+    X_model = df_model[input_feature_cols].to_numpy(dtype=float)
+    exp_feature_idx = list(range(2, X_model.shape[1]))
     Y = df_model[target_pcs].values
 
     # 4) Build split sets
@@ -947,7 +1079,7 @@ def run(args):
     models = {
         'ridge_linear': lambda: RidgeLinearModel(alpha=args.ridge_alpha),
         'poly_ridge': lambda: PolyRidgeModel(alpha=args.poly_alpha, mode=args.poly_mode, degree=args.poly_degree),
-        'gam_like': lambda: MultiTargetGAMLike(n_knots=args.gam_knots, alpha=args.gam_alpha),
+        'spline': lambda: MultiTargetGAMLike(n_knots=args.gam_knots, alpha=args.gam_alpha),
     }
 
     metrics_rows = []
@@ -956,7 +1088,11 @@ def run(args):
     recon_rows = []
 
     for split_type, fold_name, train_idx, test_idx in split_jobs:
-        X_train, X_test = X_base[train_idx], X_base[test_idx]
+        X_train = X_model[train_idx].copy()
+        X_test = X_model[test_idx].copy()
+        if split_type == 'LOEX' and exp_feature_idx:
+            # Prevent identity leakage at LOEX inference time.
+            X_test[:, exp_feature_idx] = 0.0
         Y_train, Y_test = Y[train_idx], Y[test_idx]
 
         fold_meta = df_model.iloc[test_idx][key_cols].reset_index(drop=True)
@@ -1021,6 +1157,10 @@ def run(args):
     # Save prediction-level outputs
     df_fold_preds = pd.concat(fold_pred_rows, ignore_index=True) if fold_pred_rows else pd.DataFrame()
     df_fold_preds.to_csv(os.path.join(preds_dir, 'fold_pc_predictions.csv'), index=False)
+    save_lor_pc1_1d_trace_plot(
+        df_fold_preds,
+        os.path.join(metrics_dir, 'lor_pc1_1d_trajectory_traces.png')
+    )
 
     df_recon = pd.concat(recon_rows, ignore_index=True) if recon_rows else pd.DataFrame()
     df_recon.to_csv(os.path.join(preds_dir, 'fold_feature_reconstruction_predictions.csv'), index=False)
@@ -1087,22 +1227,40 @@ def run(args):
                 os.path.join(metrics_dir, 'feature_reconstruction_errors_summary.png')
             )
 
-    # High-CN extrapolation scenario
-    cn_lambdas = {exp: cn_map.get(exp, np.nan) for exp in sorted(df_model['Experiment'].unique())}
-    valid_cn = {k: v for k, v in cn_lambdas.items() if pd.notna(v)}
-
+    # Custom train/test holdout scenario.
     extrap_rows = []
     extrap_pred_rows = []
-    if len(valid_cn) >= 2:
-        max_cn = max(valid_cn.values())
-        high_exp = sorted([k for k, v in valid_cn.items() if v == max_cn])
-        test_mask = df_model['Experiment'].isin(high_exp).values
-        train_mask = ~test_mask
+    available_experiments = set(df_model['Experiment'].astype(str).unique())
+    requested_train_exps = [str(x) for x in args.stress_train_experiments]
+    requested_test_exps = [str(x) for x in args.stress_test_experiments]
+    overlap_exps = sorted(set(requested_train_exps).intersection(set(requested_test_exps)))
+    if overlap_exps:
+        raise ValueError(
+            f'Stress-test train/test experiment lists overlap: {", ".join(overlap_exps)}'
+        )
+
+    train_exps = [e for e in requested_train_exps if e in available_experiments]
+    test_exps = [e for e in requested_test_exps if e in available_experiments]
+    missing_train = sorted(set(requested_train_exps) - set(train_exps))
+    missing_test = sorted(set(requested_test_exps) - set(test_exps))
+    if missing_train:
+        print(f"[warn] Stress-test train experiments missing from data: {', '.join(missing_train)}")
+    if missing_test:
+        print(f"[warn] Stress-test test experiments missing from data: {', '.join(missing_test)}")
+
+    if train_exps and test_exps:
+        test_mask = df_model['Experiment'].isin(test_exps).values
+        train_mask = df_model['Experiment'].isin(train_exps).values
 
         if np.sum(train_mask) > 5 and np.sum(test_mask) > 3:
-            X_train, X_test = X_base[train_mask], X_base[test_mask]
+            X_train = X_model[train_mask].copy()
+            X_test = X_model[test_mask].copy()
+            if exp_feature_idx:
+                # Held-out experiment prediction should not use nuisance IDs.
+                X_test[:, exp_feature_idx] = 0.0
             Y_train, Y_test = Y[train_mask], Y[test_mask]
             fold_meta = df_model.loc[test_mask, key_cols].reset_index(drop=True)
+            scenario_name = 'custom_train_test_holdout'
 
             for model_name, builder in models.items():
                 model = builder()
@@ -1117,9 +1275,9 @@ def run(args):
                         'R2': pm['R2'],
                         'RMSE': pm['RMSE'],
                         'MAE': pm['MAE'],
-                        'Train_Experiments': ';'.join(sorted(df_model.loc[train_mask, 'Experiment'].unique())),
-                        'Test_Experiments': ';'.join(high_exp),
-                        'Scenario': 'lower_cn_train_high_cn_test',
+                        'Train_Experiments': ';'.join(train_exps),
+                        'Test_Experiments': ';'.join(test_exps),
+                        'Scenario': scenario_name,
                     })
 
                 pred_df = fold_meta.copy()
@@ -1127,7 +1285,7 @@ def run(args):
                     pred_df[f'True_{pc}'] = Y_test[:, i]
                     pred_df[f'Pred_{pc}'] = Y_pred[:, i]
                 pred_df['Model'] = model_name
-                pred_df['Scenario'] = 'lower_cn_train_high_cn_test'
+                pred_df['Scenario'] = scenario_name
                 extrap_pred_rows.append(pred_df.copy())
                 t_metrics = trajectory_metrics(pred_df, target_pcs)
                 extrap_rows.append({
@@ -1136,11 +1294,18 @@ def run(args):
                     'R2': np.nan,
                     'RMSE': t_metrics['Centroid_Path_Error'],
                     'MAE': t_metrics['Endpoint_Error'],
-                    'Train_Experiments': ';'.join(sorted(df_model.loc[train_mask, 'Experiment'].unique())),
-                    'Test_Experiments': ';'.join(high_exp),
-                    'Scenario': 'lower_cn_train_high_cn_test',
+                    'Train_Experiments': ';'.join(train_exps),
+                    'Test_Experiments': ';'.join(test_exps),
+                    'Scenario': scenario_name,
                     'Direction_Angle_Error_Deg': t_metrics['Direction_Angle_Error_Deg'],
                 })
+        else:
+            print(
+                '[warn] Not enough samples for custom stress-test holdout: '
+                f'train_n={int(np.sum(train_mask))}, test_n={int(np.sum(test_mask))}'
+            )
+    else:
+        print('[warn] Custom stress-test holdout skipped due to empty train or test experiment set.')
 
     if extrap_rows:
         df_extrap = pd.DataFrame(extrap_rows)
@@ -1179,15 +1344,30 @@ def run(args):
         'cn_map': cn_map,
         'cn_cells': args.cn_cells,
         'seed': args.seed,
+        'custom_stress_holdout': {
+            'train_experiments': [str(x) for x in args.stress_train_experiments],
+            'test_experiments': [str(x) for x in args.stress_test_experiments],
+        },
         'models': {
-            'ridge_linear': {'alpha': args.ridge_alpha, 'inputs': ['Dox_Log1p10', 'CN_Sample_Mean']},
+            'ridge_linear': {
+                'alpha': args.ridge_alpha,
+                'inputs': input_feature_cols,
+                'loex_test_override': 'ExperimentID_* columns forced to 0 at prediction time',
+            },
             'poly_ridge': {
                 'alpha': args.poly_alpha,
                 'mode': args.poly_mode,
                 'degree': args.poly_degree,
-                'inputs_selected_mode': selected_poly_feature_names(),
+                'inputs': input_feature_cols,
+                'inputs_selected_mode': selected_poly_feature_names(exp_ohe_cols),
+                'loex_test_override': 'ExperimentID_* columns forced to 0 at prediction time',
             },
-            'gam_like': {'gam_knots': args.gam_knots, 'alpha_fallback': args.gam_alpha},
+            'spline': {
+                'gam_knots': args.gam_knots,
+                'alpha_fallback': args.gam_alpha,
+                'inputs': input_feature_cols,
+                'loex_test_override': 'ExperimentID_* columns forced to 0 at prediction time',
+            },
         },
         'valid_features': frozen.feature_order,
         'explained_variance_ratio': frozen.explained_variance_ratio.tolist(),
@@ -1205,6 +1385,12 @@ def run(args):
         f.write(f'- PCA basis (effective): `{frozen.pca_fit_basis}`\n')
         f.write(f'- Replicate adjust: `{args.replicate_adjust}`\n')
         f.write(f'- Target PCs: {", ".join(target_pcs)}\n\n')
+        f.write(
+            f'- Custom stress holdout train: {", ".join([str(x) for x in args.stress_train_experiments])}\n'
+        )
+        f.write(
+            f'- Custom stress holdout test: {", ".join([str(x) for x in args.stress_test_experiments])}\n\n'
+        )
 
         if not metric_summary.empty:
             f.write('## Per-PC Metrics (Mean Across Folds)\n\n')
@@ -1268,6 +1454,10 @@ if __name__ == '__main__':
                         help='Evaluate leave-one-(experiment,replicate)-out splits.')
     parser.add_argument('--eval-loex', action=argparse.BooleanOptionalAction, default=True,
                         help='Evaluate leave-one-experiment-out splits.')
+    parser.add_argument('--stress-train-experiments', nargs='+', default=['exp1', 'exp2_high_cn'],
+                        help='Custom stress-test training experiments.')
+    parser.add_argument('--stress-test-experiments', nargs='+', default=['exp2_low_cn'],
+                        help='Custom stress-test held-out test experiments.')
 
     parser.add_argument('--seed', type=int, default=42)
 
