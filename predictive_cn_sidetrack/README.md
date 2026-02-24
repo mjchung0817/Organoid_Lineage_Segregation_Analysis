@@ -11,8 +11,17 @@ This sidetrack implements the predictive workflow discussed for continuous dox/C
   - `poly_ridge`
     - `--poly-mode selected` (default): `dox, dox^2, dox^3, cn, dox*cn, dox^2*cn`
     - `--poly-mode full`: full sklearn polynomial expansion up to `--poly-degree`
-  - `gam_like` (pyGAM if available, otherwise spline+ridge fallback)
+  - `spline` (pyGAM if available, otherwise spline+ridge fallback)
+- Supports CN encoding ablation via `--cn-encodings`:
+  - `lambda`: `CN_Lambda`
+  - `sample_mean`: `CN_Sample_Mean`
+  - `summary`: `CN_Sample_Mean + CN_Sample_Std + CN_Sample_P10/P50/P90`
+- Supports `Cluster_Size_Endo` ablation via `--cluster-size-endo-mode`:
+  - `keep`: original feature
+  - `drop`: remove `Cluster_Size_Endo` from PCA/features
+  - `log1p`: replace with `log1p(max(Cluster_Size_Endo, 0))`
 - Runs strict holdouts:
+  - Random CV (sample-level; optimistic baseline)
   - LOR: leave-one-(experiment,replicate)-out
   - LOEX: leave-one-experiment-out
 - Exports per-PC metrics, trajectory metrics, and feature back-projection errors.
@@ -35,12 +44,18 @@ python "/Users/minjaechung/Desktop/GaTech/KempLab/Andrew's Paper Spatial Analysi
   --trajectory-group-by experiment \
   --pca-fit-basis exp_dox_centroids \
   --organoid-limit 3 \
+  --cluster-size-endo-mode keep \
   --target-pcs 3 \
   --cn-map "exp1:4.5,exp2_high_cn:9,exp2_low_cn:4" \
   --cn-cells 100 \
+  --cn-encodings lambda sample_mean summary \
   --poly-mode selected \
   --poly-degree 3 \
-  --eval-lor --eval-loex
+  --eval-random --eval-lor --eval-loex \
+  --random-splits 10 \
+  --random-test-size 0.2 \
+  --stress-train-experiments exp1 exp2_low_cn \
+  --stress-test-experiments exp2_high_cn
 ```
 
 ## Output structure
@@ -51,10 +66,13 @@ Key files:
 - `artifacts/frozen_pca_scores.csv`
 - `artifacts/frozen_pca_loadings.csv`
 - `artifacts/frozen_scaler_params.csv`
+- `artifacts/feature_matrix_raw_unmodified.csv`
+- `artifacts/feature_matrix_raw.csv`
 - `metrics/per_pc_metrics_by_fold.csv`
 - `metrics/per_pc_metrics_summary.csv`
 - `metrics/trajectory_metrics_by_fold.csv`
 - `metrics/trajectory_metrics_summary.csv`
+- `metrics/*_lambda.csv|png`, `metrics/*_sample_mean.csv|png`, `metrics/*_summary.csv|png` (per-encoding outputs)
 - `metrics/high_cn_extrapolation_metrics.csv` (when applicable)
 - `predictions/fold_pc_predictions.csv`
 - `predictions/fold_feature_reconstruction_predictions.csv`

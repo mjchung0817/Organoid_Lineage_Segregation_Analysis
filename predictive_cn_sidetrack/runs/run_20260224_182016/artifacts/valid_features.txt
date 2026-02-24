@@ -1,0 +1,16 @@
+Total_Cells
+Pct_Endo
+Pct_Meso
+Radial_Mean_Endo
+Radial_Std_Endo
+Radial_Mean_Meso
+Radial_Std_Meso
+NMS_Endo
+NMS_Meso
+Cluster_Count_Endo
+Cluster_Count_Meso
+Cluster_Size_Meso
+Intra_Distance_Endo
+Intra_Distance_Meso
+Inter_Distance
+Adjacency_Pct

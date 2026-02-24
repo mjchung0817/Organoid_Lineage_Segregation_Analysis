@@ -159,13 +159,14 @@ def save_stress_test_side_by_side_plot(df_metrics: pd.DataFrame, df_traj: pd.Dat
         return
 
     setup_plot_style()
-    split_order = ['LOR', 'LOEX']
+    split_order = ['RANDOM', 'LOR', 'LOEX']
     split_label = {
+        'RANDOM': 'Random CV (sample-level split)',
         'LOR': 'LOR (leave-one-replicate-out)',
         'LOEX': 'LOEX (leave-one-experiment-out)',
     }
 
-    fig, axes = plt.subplots(3, 2, figsize=(21, 16), squeeze=False)
+    fig, axes = plt.subplots(3, 3, figsize=(31, 16), squeeze=False)
 
     for c, split in enumerate(split_order):
         dms = df_metrics[df_metrics['Split_Type'].astype(str) == split].copy()
@@ -222,8 +223,8 @@ def save_stress_test_side_by_side_plot(df_metrics: pd.DataFrame, df_traj: pd.Dat
 
     # Legend cleanup: keep only one legend per row.
     for r in range(3):
-        for c in range(2):
-            if c == 1 and axes[r, c].legend_ is not None:
+        for c in range(3):
+            if c > 0 and axes[r, c].legend_ is not None:
                 axes[r, c].legend_.remove()
 
     plt.suptitle('Stress-Test Comparison: LOR vs LOEX', y=1.01, fontsize=20, fontweight='bold')
@@ -509,6 +510,50 @@ def collect_feature_matrix(spatial_mod, project_root: str, experiments: List[str
     return pd.DataFrame(all_records)
 
 
+def apply_cluster_size_endo_mode(df_features: pd.DataFrame, mode: str) -> pd.DataFrame:
+    if mode not in {'keep', 'drop', 'log1p'}:
+        raise ValueError(f"Unsupported cluster-size-endo mode: {mode}")
+
+    out = df_features.copy()
+    feat = 'Cluster_Size_Endo'
+    if feat not in out.columns:
+        print('[warn] Cluster_Size_Endo column is not present; ablation mode has no effect.')
+        return out
+
+    col = pd.to_numeric(out[feat], errors='coerce')
+    before_min = float(np.nanmin(col.values)) if col.notna().any() else float('nan')
+    before_max = float(np.nanmax(col.values)) if col.notna().any() else float('nan')
+    before_mean = float(np.nanmean(col.values)) if col.notna().any() else float('nan')
+
+    if mode == 'drop':
+        out = out.drop(columns=[feat])
+        print(
+            f"[ablation] Cluster_Size_Endo mode=drop (before: mean={before_mean:.3f}, "
+            f"min={before_min:.3f}, max={before_max:.3f})"
+        )
+        return out
+
+    if mode == 'log1p':
+        # Stabilize heavy-tailed positive values while preserving order.
+        clipped = np.clip(col.values, a_min=0.0, a_max=None)
+        out[feat] = np.where(np.isnan(col.values), np.nan, np.log1p(clipped))
+        after = pd.to_numeric(out[feat], errors='coerce')
+        after_min = float(np.nanmin(after.values)) if after.notna().any() else float('nan')
+        after_max = float(np.nanmax(after.values)) if after.notna().any() else float('nan')
+        after_mean = float(np.nanmean(after.values)) if after.notna().any() else float('nan')
+        print(
+            f"[ablation] Cluster_Size_Endo mode=log1p "
+            f"(before mean/min/max={before_mean:.3f}/{before_min:.3f}/{before_max:.3f}; "
+            f"after mean/min/max={after_mean:.3f}/{after_min:.3f}/{after_max:.3f})"
+        )
+        return out
+
+    print(
+        f"[ablation] Cluster_Size_Endo mode=keep (mean/min/max={before_mean:.3f}/{before_min:.3f}/{before_max:.3f})"
+    )
+    return out
+
+
 @dataclass
 class FrozenPCAArtifacts:
     scores: pd.DataFrame
@@ -700,12 +745,37 @@ def add_experiment_one_hot_inputs(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[
     return out, exp_ohe.columns.tolist()
 
 
+def resolve_cn_encodings(requested: List[str]) -> List[str]:
+    canonical = ['lambda', 'sample_mean', 'summary']
+    if not requested:
+        return canonical
+    if 'all' in requested:
+        return canonical
+    out = []
+    for enc in requested:
+        if enc not in canonical:
+            raise ValueError(f'Unsupported CN encoding: {enc}')
+        if enc not in out:
+            out.append(enc)
+    return out
+
+
+def get_cn_input_columns(encoding: str) -> List[str]:
+    if encoding == 'lambda':
+        return ['CN_Lambda']
+    if encoding == 'sample_mean':
+        return ['CN_Sample_Mean']
+    if encoding == 'summary':
+        return ['CN_Sample_Mean', 'CN_Sample_Std', 'CN_Sample_P10', 'CN_Sample_P50', 'CN_Sample_P90']
+    raise ValueError(f'Unsupported CN encoding: {encoding}')
+
+
 # -----------------------------
 # Models
 # -----------------------------
 
 def poly_interaction_transform(X: np.ndarray) -> np.ndarray:
-    # Input columns: [Dox_Log1p10, CN_Sample_Mean, optional nuisance one-hot terms...]
+    # Input columns: [Dox_Log1p10, CN_primary, optional extra CN stats + nuisance one-hot terms...]
     dox = X[:, 0]
     cn = X[:, 1]
     core = np.column_stack([
@@ -726,9 +796,9 @@ def selected_poly_feature_names(extra_feature_names: List[str] | None = None) ->
         'Dox_Log1p10',
         'Dox_Log1p10^2',
         'Dox_Log1p10^3',
-        'CN_Sample_Mean',
-        'Dox_Log1p10*CN_Sample_Mean',
-        'Dox_Log1p10^2*CN_Sample_Mean',
+        'CN_Primary',
+        'Dox_Log1p10*CN_Primary',
+        'Dox_Log1p10^2*CN_Primary',
     ]
     if extra_feature_names:
         names.extend(extra_feature_names)
@@ -740,9 +810,10 @@ class MultiTargetGAMLike:
     Uses pyGAM if available; otherwise uses spline+rige fallback per target.
     """
 
-    def __init__(self, n_knots: int = 5, alpha: float = 1.0):
+    def __init__(self, n_knots: int = 5, alpha: float = 1.0, lam: float = 1.0):
         self.n_knots = n_knots
         self.alpha = alpha
+        self.lam = lam
         self.backend = None
         self.models = []
         self.fallback_spline = None
@@ -765,7 +836,7 @@ class MultiTargetGAMLike:
             for i in range(2, X.shape[1]):
                 terms += l(i)
             for i in range(Y.shape[1]):
-                model = LinearGAM(terms).fit(X, Y[:, i])
+                model = LinearGAM(terms, lam=self.lam).fit(X, Y[:, i])
                 self.models.append(model)
         except Exception:
             self.backend = 'spline_ridge_fallback'
@@ -863,6 +934,78 @@ def make_loex_splits(df: pd.DataFrame) -> List[Tuple[str, np.ndarray, np.ndarray
             continue
         splits.append((f'loex_{exp}', train_idx, test_idx))
     return splits
+
+
+def make_random_splits(
+    n_samples: int,
+    n_splits: int = 10,
+    test_size: float = 0.2,
+    seed: int = 42,
+) -> List[Tuple[str, np.ndarray, np.ndarray]]:
+    if n_samples < 5:
+        return []
+    n_test = max(1, int(round(n_samples * test_size)))
+    n_test = min(n_test, n_samples - 1)
+
+    rng = np.random.default_rng(seed)
+    indices = np.arange(n_samples)
+    splits = []
+    for i in range(n_splits):
+        test_idx = np.sort(rng.choice(indices, size=n_test, replace=False))
+        train_mask = np.ones(n_samples, dtype=bool)
+        train_mask[test_idx] = False
+        train_idx = indices[train_mask]
+        splits.append((f'random_{i+1:02d}', train_idx, test_idx))
+    return splits
+
+
+def tune_gam_lam_nested(
+    X_train: np.ndarray,
+    Y_train: np.ndarray,
+    lam_grid: List[float],
+    n_inner_splits: int,
+    inner_test_size: float,
+    seed: int,
+    n_knots: int,
+    alpha: float,
+) -> Tuple[float, pd.DataFrame]:
+    if not lam_grid:
+        return 1.0, pd.DataFrame()
+
+    inner_jobs = make_random_splits(
+        n_samples=len(X_train),
+        n_splits=n_inner_splits,
+        test_size=inner_test_size,
+        seed=seed,
+    )
+    if not inner_jobs:
+        return float(lam_grid[0]), pd.DataFrame()
+
+    rows = []
+    for lam in lam_grid:
+        split_rmses = []
+        backend_name = None
+        for _, tr_idx, va_idx in inner_jobs:
+            model = MultiTargetGAMLike(n_knots=n_knots, alpha=alpha, lam=float(lam))
+            model.fit(X_train[tr_idx], Y_train[tr_idx])
+            y_pred = model.predict(X_train[va_idx])
+            backend_name = model.backend
+
+            rmse_vals = []
+            for i in range(Y_train.shape[1]):
+                rmse_vals.append(float(np.sqrt(mean_squared_error(Y_train[va_idx][:, i], y_pred[:, i]))))
+            split_rmses.append(float(np.mean(rmse_vals)))
+
+        rows.append({
+            'Candidate_Lam': float(lam),
+            'Inner_Mean_RMSE': float(np.mean(split_rmses)),
+            'Inner_Std_RMSE': float(np.std(split_rmses, ddof=1)) if len(split_rmses) > 1 else 0.0,
+            'Backend': backend_name if backend_name else 'unknown',
+        })
+
+    df_tune = pd.DataFrame(rows).sort_values('Inner_Mean_RMSE', ascending=True).reset_index(drop=True)
+    best_lam = float(df_tune.iloc[0]['Candidate_Lam'])
+    return best_lam, df_tune
 
 
 def per_pc_metrics(y_true: np.ndarray, y_pred: np.ndarray, pc_names: List[str]) -> List[Dict[str, float]]:
@@ -993,6 +1136,9 @@ def run(args):
     if df_features.empty:
         raise RuntimeError('No organoid features were collected. Check dataset paths and filters.')
 
+    feature_csv_unmod = os.path.join(artifacts_dir, 'feature_matrix_raw_unmodified.csv')
+    df_features.to_csv(feature_csv_unmod, index=False)
+    df_features = apply_cluster_size_endo_mode(df_features, args.cluster_size_endo_mode)
     feature_csv = os.path.join(artifacts_dir, 'feature_matrix_raw.csv')
     df_features.to_csv(feature_csv, index=False)
 
@@ -1059,275 +1205,472 @@ def run(args):
     key_cols = ['File', 'Experiment', 'Replicate', 'Dox_Concentration']
     df_obs_feat = frozen.processed_features[key_cols + frozen.feature_order].copy()
 
-    # Core model input matrix: biology terms + nuisance experiment IDs.
-    input_feature_cols = ['Dox_Log1p10', 'CN_Sample_Mean'] + exp_ohe_cols
-    X_model = df_model[input_feature_cols].to_numpy(dtype=float)
-    exp_feature_idx = list(range(2, X_model.shape[1]))
-    Y = df_model[target_pcs].values
-
     # 4) Build split sets
     split_jobs = []
+    if args.eval_random:
+        split_jobs.extend([
+            ('RANDOM',) + s
+            for s in make_random_splits(
+                n_samples=len(df_model),
+                n_splits=args.random_splits,
+                test_size=args.random_test_size,
+                seed=args.seed,
+            )
+        ])
     if args.eval_lor:
         split_jobs.extend([('LOR',) + s for s in make_lor_splits(df_model)])
     if args.eval_loex:
         split_jobs.extend([('LOEX',) + s for s in make_loex_splits(df_model)])
-
     if not split_jobs:
         raise ValueError('No evaluation splits selected. Enable --eval-lor and/or --eval-loex.')
 
-    # 5) Model registry
-    models = {
-        'ridge_linear': lambda: RidgeLinearModel(alpha=args.ridge_alpha),
-        'poly_ridge': lambda: PolyRidgeModel(alpha=args.poly_alpha, mode=args.poly_mode, degree=args.poly_degree),
-        'spline': lambda: MultiTargetGAMLike(n_knots=args.gam_knots, alpha=args.gam_alpha),
-    }
+    cn_encodings = resolve_cn_encodings(args.cn_encodings)
+    print(f"CN encodings for ablation: {', '.join(cn_encodings)}")
 
-    metrics_rows = []
-    traj_rows = []
-    fold_pred_rows = []
-    recon_rows = []
+    all_metric_frames: List[pd.DataFrame] = []
+    all_traj_frames: List[pd.DataFrame] = []
+    all_fold_pred_frames: List[pd.DataFrame] = []
+    all_recon_frames: List[pd.DataFrame] = []
+    all_feat_err_frames: List[pd.DataFrame] = []
+    all_extrap_frames: List[pd.DataFrame] = []
+    all_extrap_pred_frames: List[pd.DataFrame] = []
+    all_gam_tune_frames: List[pd.DataFrame] = []
+    encoding_run_configs: Dict[str, Dict[str, object]] = {}
 
-    for split_type, fold_name, train_idx, test_idx in split_jobs:
-        X_train = X_model[train_idx].copy()
-        X_test = X_model[test_idx].copy()
-        if split_type == 'LOEX' and exp_feature_idx:
-            # Prevent identity leakage at LOEX inference time.
-            X_test[:, exp_feature_idx] = 0.0
-        Y_train, Y_test = Y[train_idx], Y[test_idx]
-
-        fold_meta = df_model.iloc[test_idx][key_cols].reset_index(drop=True)
-
-        for model_name, builder in models.items():
-            model = builder()
-            model.fit(X_train, Y_train)
-            Y_pred = model.predict(X_test)
-
-            # per-PC metrics
-            pc_metric_list = per_pc_metrics(Y_test, Y_pred, target_pcs)
-            for pm in pc_metric_list:
-                metrics_rows.append({
-                    'Split_Type': split_type,
-                    'Fold': fold_name,
-                    'Model': model_name,
-                    'PC': pm['PC'],
-                    'R2': pm['R2'],
-                    'RMSE': pm['RMSE'],
-                    'MAE': pm['MAE'],
-                    'Test_N': len(test_idx),
-                })
-
-            # build fold prediction dataframe
-            pred_df = fold_meta.copy()
-            for i, pc in enumerate(target_pcs):
-                pred_df[f'True_{pc}'] = Y_test[:, i]
-                pred_df[f'Pred_{pc}'] = Y_pred[:, i]
-            pred_df['Split_Type'] = split_type
-            pred_df['Fold'] = fold_name
-            pred_df['Model'] = model_name
-
-            fold_pred_rows.append(pred_df)
-
-            # trajectory metrics
-            t_metrics = trajectory_metrics(pred_df, target_pcs)
-            traj_rows.append({
-                'Split_Type': split_type,
-                'Fold': fold_name,
-                'Model': model_name,
-                **t_metrics,
-            })
-
-            # back-projection to feature space
-            xhat = reconstruct_features_from_pred_pcs(
-                y_pred=Y_pred,
-                components=frozen.components,
-                scaler_mean=frozen.scaler_mean,
-                scaler_scale=frozen.scaler_scale,
-                n_total_components=frozen.components.shape[0],
-                n_pred_components=args.target_pcs,
+    for cn_encoding in cn_encodings:
+        cn_cols = get_cn_input_columns(cn_encoding)
+        input_feature_cols = ['Dox_Log1p10'] + cn_cols + exp_ohe_cols
+        missing_input = [c for c in input_feature_cols if c not in df_model.columns]
+        if missing_input:
+            raise ValueError(
+                f"Missing columns for CN encoding '{cn_encoding}': {', '.join(missing_input)}"
             )
 
-            recon_df = fold_meta.copy()
-            for j, feat in enumerate(frozen.feature_order):
-                recon_df[f'PredFeat_{feat}'] = xhat[:, j]
-            recon_df['Split_Type'] = split_type
-            recon_df['Fold'] = fold_name
-            recon_df['Model'] = model_name
-            recon_rows.append(recon_df)
+        print(f"\n--- Encoding: {cn_encoding} | inputs: {', '.join(input_feature_cols)}")
+        X_model = df_model[input_feature_cols].to_numpy(dtype=float)
+        exp_feature_idx = list(range(1 + len(cn_cols), X_model.shape[1]))
+        Y = df_model[target_pcs].values
 
-    # Save prediction-level outputs
-    df_fold_preds = pd.concat(fold_pred_rows, ignore_index=True) if fold_pred_rows else pd.DataFrame()
-    df_fold_preds.to_csv(os.path.join(preds_dir, 'fold_pc_predictions.csv'), index=False)
-    save_lor_pc1_1d_trace_plot(
-        df_fold_preds,
-        os.path.join(metrics_dir, 'lor_pc1_1d_trajectory_traces.png')
-    )
+        model_builders = {
+            'ridge_linear': lambda: RidgeLinearModel(alpha=args.ridge_alpha),
+            'poly_ridge': lambda: PolyRidgeModel(alpha=args.poly_alpha, mode=args.poly_mode, degree=args.poly_degree),
+        }
+        model_order = ['ridge_linear', 'poly_ridge', 'spline']
+        gam_tune_rows = []
 
-    df_recon = pd.concat(recon_rows, ignore_index=True) if recon_rows else pd.DataFrame()
-    df_recon.to_csv(os.path.join(preds_dir, 'fold_feature_reconstruction_predictions.csv'), index=False)
-
-    # Save metric outputs
-    df_metrics = pd.DataFrame(metrics_rows)
-    df_metrics.to_csv(os.path.join(metrics_dir, 'per_pc_metrics_by_fold.csv'), index=False)
-    save_fold_metrics_plot(df_metrics, os.path.join(metrics_dir, 'per_pc_metrics_by_fold.png'))
-
-    df_traj = pd.DataFrame(traj_rows)
-    df_traj.to_csv(os.path.join(metrics_dir, 'trajectory_metrics_by_fold.csv'), index=False)
-    save_stress_test_side_by_side_plot(
-        df_metrics,
-        df_traj,
-        os.path.join(metrics_dir, 'stress_test_LOR_vs_LOEX.png')
-    )
-
-    # Summaries
-    metric_summary = (
-        df_metrics.groupby(['Split_Type', 'Model', 'PC'], as_index=False)[['R2', 'RMSE', 'MAE']]
-        .mean(numeric_only=True)
-    )
-    metric_summary.to_csv(os.path.join(metrics_dir, 'per_pc_metrics_summary.csv'), index=False)
-
-    traj_summary = (
-        df_traj.groupby(['Split_Type', 'Model'], as_index=False)[
-            ['Centroid_Path_Error', 'Endpoint_Error', 'Direction_Angle_Error_Deg']
-        ].mean(numeric_only=True)
-    )
-    traj_summary.to_csv(os.path.join(metrics_dir, 'trajectory_metrics_summary.csv'), index=False)
-
-    # Reconstruction errors against observed processed features
-    if not df_recon.empty:
-        recon_merge = df_recon.merge(df_obs_feat, on=key_cols, how='left')
-
+        metrics_rows = []
+        traj_rows = []
+        fold_pred_rows = []
+        recon_rows = []
         feat_err_rows = []
-        for _, row in recon_merge.iterrows():
-            for feat in frozen.feature_order:
-                pred = row.get(f'PredFeat_{feat}', np.nan)
-                obs = row.get(feat, np.nan)
-                if pd.isna(pred) or pd.isna(obs):
-                    continue
-                feat_err_rows.append({
-                    'Split_Type': row['Split_Type'],
-                    'Fold': row['Fold'],
-                    'Model': row['Model'],
-                    'Feature': feat,
-                    'Abs_Error': abs(float(pred) - float(obs)),
-                    'Sq_Error': (float(pred) - float(obs)) ** 2,
-                })
+        extrap_rows = []
+        extrap_pred_rows = []
 
-        df_feat_err = pd.DataFrame(feat_err_rows)
-        df_feat_err.to_csv(os.path.join(metrics_dir, 'feature_reconstruction_errors_long.csv'), index=False)
-
-        if not df_feat_err.empty:
-            feat_summary = (
-                df_feat_err.groupby(['Split_Type', 'Model', 'Feature'], as_index=False)
-                .agg(MAE=('Abs_Error', 'mean'), RMSE=('Sq_Error', lambda s: float(np.sqrt(np.mean(s)))))
-            )
-            feat_summary_csv = os.path.join(metrics_dir, 'feature_reconstruction_errors_summary.csv')
-            feat_summary.to_csv(feat_summary_csv, index=False)
-            save_feature_deconvolution_plot(
-                feat_summary,
-                os.path.join(metrics_dir, 'feature_reconstruction_errors_summary.png')
-            )
-
-    # Custom train/test holdout scenario.
-    extrap_rows = []
-    extrap_pred_rows = []
-    available_experiments = set(df_model['Experiment'].astype(str).unique())
-    requested_train_exps = [str(x) for x in args.stress_train_experiments]
-    requested_test_exps = [str(x) for x in args.stress_test_experiments]
-    overlap_exps = sorted(set(requested_train_exps).intersection(set(requested_test_exps)))
-    if overlap_exps:
-        raise ValueError(
-            f'Stress-test train/test experiment lists overlap: {", ".join(overlap_exps)}'
-        )
-
-    train_exps = [e for e in requested_train_exps if e in available_experiments]
-    test_exps = [e for e in requested_test_exps if e in available_experiments]
-    missing_train = sorted(set(requested_train_exps) - set(train_exps))
-    missing_test = sorted(set(requested_test_exps) - set(test_exps))
-    if missing_train:
-        print(f"[warn] Stress-test train experiments missing from data: {', '.join(missing_train)}")
-    if missing_test:
-        print(f"[warn] Stress-test test experiments missing from data: {', '.join(missing_test)}")
-
-    if train_exps and test_exps:
-        test_mask = df_model['Experiment'].isin(test_exps).values
-        train_mask = df_model['Experiment'].isin(train_exps).values
-
-        if np.sum(train_mask) > 5 and np.sum(test_mask) > 3:
-            X_train = X_model[train_mask].copy()
-            X_test = X_model[test_mask].copy()
-            if exp_feature_idx:
-                # Held-out experiment prediction should not use nuisance IDs.
+        for split_type, fold_name, train_idx, test_idx in split_jobs:
+            X_train = X_model[train_idx].copy()
+            X_test = X_model[test_idx].copy()
+            if split_type == 'LOEX' and exp_feature_idx:
+                # Prevent identity leakage at LOEX inference time.
                 X_test[:, exp_feature_idx] = 0.0
-            Y_train, Y_test = Y[train_mask], Y[test_mask]
-            fold_meta = df_model.loc[test_mask, key_cols].reset_index(drop=True)
-            scenario_name = 'custom_train_test_holdout'
+            Y_train, Y_test = Y[train_idx], Y[test_idx]
+            fold_meta = df_model.iloc[test_idx][key_cols].reset_index(drop=True)
 
-            for model_name, builder in models.items():
-                model = builder()
+            for model_name in model_order:
+                gam_lam_used = np.nan
+                gam_tuned = False
+                if model_name == 'spline':
+                    gam_lam_used = float(args.gam_lam)
+                    if args.gam_tune_lam and split_type in args.gam_lam_tune_splits:
+                        tuned_lam, df_tune = tune_gam_lam_nested(
+                            X_train=X_train,
+                            Y_train=Y_train,
+                            lam_grid=args.gam_lam_grid,
+                            n_inner_splits=args.gam_inner_splits,
+                            inner_test_size=args.gam_inner_test_size,
+                            seed=args.seed,
+                            n_knots=args.gam_knots,
+                            alpha=args.gam_alpha,
+                        )
+                        gam_lam_used = float(tuned_lam)
+                        gam_tuned = True
+                        if not df_tune.empty:
+                            df_t = df_tune.copy()
+                            df_t['CN_Encoding'] = cn_encoding
+                            df_t['Split_Type'] = split_type
+                            df_t['Fold'] = fold_name
+                            df_t['Selected_Lam'] = gam_lam_used
+                            df_t['Is_Selected'] = np.isclose(df_t['Candidate_Lam'].values, gam_lam_used)
+                            gam_tune_rows.append(df_t)
+                    model = MultiTargetGAMLike(
+                        n_knots=args.gam_knots,
+                        alpha=args.gam_alpha,
+                        lam=float(gam_lam_used),
+                    )
+                else:
+                    model = model_builders[model_name]()
                 model.fit(X_train, Y_train)
                 Y_pred = model.predict(X_test)
 
-                pm_list = per_pc_metrics(Y_test, Y_pred, target_pcs)
-                for pm in pm_list:
-                    extrap_rows.append({
+                pc_metric_list = per_pc_metrics(Y_test, Y_pred, target_pcs)
+                for pm in pc_metric_list:
+                    metrics_rows.append({
+                        'CN_Encoding': cn_encoding,
+                        'Split_Type': split_type,
+                        'Fold': fold_name,
                         'Model': model_name,
                         'PC': pm['PC'],
                         'R2': pm['R2'],
                         'RMSE': pm['RMSE'],
                         'MAE': pm['MAE'],
-                        'Train_Experiments': ';'.join(train_exps),
-                        'Test_Experiments': ';'.join(test_exps),
-                        'Scenario': scenario_name,
+                        'GAM_Lam': gam_lam_used,
+                        'GAM_Tuned': gam_tuned,
+                        'Test_N': len(test_idx),
                     })
 
                 pred_df = fold_meta.copy()
                 for i, pc in enumerate(target_pcs):
                     pred_df[f'True_{pc}'] = Y_test[:, i]
                     pred_df[f'Pred_{pc}'] = Y_pred[:, i]
+                pred_df['CN_Encoding'] = cn_encoding
+                pred_df['Split_Type'] = split_type
+                pred_df['Fold'] = fold_name
                 pred_df['Model'] = model_name
-                pred_df['Scenario'] = scenario_name
-                extrap_pred_rows.append(pred_df.copy())
+                pred_df['GAM_Lam'] = gam_lam_used
+                pred_df['GAM_Tuned'] = gam_tuned
+                fold_pred_rows.append(pred_df)
+
                 t_metrics = trajectory_metrics(pred_df, target_pcs)
-                extrap_rows.append({
+                traj_rows.append({
+                    'CN_Encoding': cn_encoding,
+                    'Split_Type': split_type,
+                    'Fold': fold_name,
                     'Model': model_name,
-                    'PC': 'TRAJECTORY',
-                    'R2': np.nan,
-                    'RMSE': t_metrics['Centroid_Path_Error'],
-                    'MAE': t_metrics['Endpoint_Error'],
-                    'Train_Experiments': ';'.join(train_exps),
-                    'Test_Experiments': ';'.join(test_exps),
-                    'Scenario': scenario_name,
-                    'Direction_Angle_Error_Deg': t_metrics['Direction_Angle_Error_Deg'],
+                    'GAM_Lam': gam_lam_used,
+                    'GAM_Tuned': gam_tuned,
+                    **t_metrics,
                 })
-        else:
-            print(
-                '[warn] Not enough samples for custom stress-test holdout: '
-                f'train_n={int(np.sum(train_mask))}, test_n={int(np.sum(test_mask))}'
-            )
-    else:
-        print('[warn] Custom stress-test holdout skipped due to empty train or test experiment set.')
 
-    if extrap_rows:
-        df_extrap = pd.DataFrame(extrap_rows)
-        df_extrap.to_csv(os.path.join(metrics_dir, 'high_cn_extrapolation_metrics.csv'), index=False)
+                xhat = reconstruct_features_from_pred_pcs(
+                    y_pred=Y_pred,
+                    components=frozen.components,
+                    scaler_mean=frozen.scaler_mean,
+                    scaler_scale=frozen.scaler_scale,
+                    n_total_components=frozen.components.shape[0],
+                    n_pred_components=args.target_pcs,
+                )
+                recon_df = fold_meta.copy()
+                for j, feat in enumerate(frozen.feature_order):
+                    recon_df[f'PredFeat_{feat}'] = xhat[:, j]
+                recon_df['CN_Encoding'] = cn_encoding
+                recon_df['Split_Type'] = split_type
+                recon_df['Fold'] = fold_name
+                recon_df['Model'] = model_name
+                recon_df['GAM_Lam'] = gam_lam_used
+                recon_df['GAM_Tuned'] = gam_tuned
+                recon_rows.append(recon_df)
 
-        save_high_cn_extrapolation_performance_plot(
-            df_extrap,
-            os.path.join(metrics_dir, 'high_cn_extrapolation_performance.png')
+        df_fold_preds = pd.concat(fold_pred_rows, ignore_index=True) if fold_pred_rows else pd.DataFrame()
+        df_recon = pd.concat(recon_rows, ignore_index=True) if recon_rows else pd.DataFrame()
+        df_metrics = pd.DataFrame(metrics_rows)
+        df_traj = pd.DataFrame(traj_rows)
+
+        df_fold_preds.to_csv(
+            os.path.join(preds_dir, f'fold_pc_predictions_{cn_encoding}.csv'),
+            index=False
+        )
+        df_recon.to_csv(
+            os.path.join(preds_dir, f'fold_feature_reconstruction_predictions_{cn_encoding}.csv'),
+            index=False
+        )
+        df_metrics.to_csv(
+            os.path.join(metrics_dir, f'per_pc_metrics_by_fold_{cn_encoding}.csv'),
+            index=False
+        )
+        df_traj.to_csv(
+            os.path.join(metrics_dir, f'trajectory_metrics_by_fold_{cn_encoding}.csv'),
+            index=False
         )
 
-        if extrap_pred_rows:
-            df_extrap_preds = pd.concat(extrap_pred_rows, ignore_index=True)
-            df_extrap_preds.to_csv(
-                os.path.join(preds_dir, 'high_cn_extrapolation_pc_predictions.csv'),
+        save_lor_pc1_1d_trace_plot(
+            df_fold_preds,
+            os.path.join(metrics_dir, f'lor_pc1_1d_trajectory_traces_{cn_encoding}.png')
+        )
+        save_fold_metrics_plot(
+            df_metrics,
+            os.path.join(metrics_dir, f'per_pc_metrics_by_fold_{cn_encoding}.png')
+        )
+        save_stress_test_side_by_side_plot(
+            df_metrics,
+            df_traj,
+            os.path.join(metrics_dir, f'stress_test_LOR_vs_LOEX_{cn_encoding}.png')
+        )
+
+        metric_summary_enc = (
+            df_metrics.groupby(['CN_Encoding', 'Split_Type', 'Model', 'PC'], as_index=False)[['R2', 'RMSE', 'MAE']]
+            .mean(numeric_only=True)
+        )
+        traj_summary_enc = (
+            df_traj.groupby(['CN_Encoding', 'Split_Type', 'Model'], as_index=False)[
+                ['Centroid_Path_Error', 'Endpoint_Error', 'Direction_Angle_Error_Deg']
+            ].mean(numeric_only=True)
+        )
+        metric_summary_enc.to_csv(
+            os.path.join(metrics_dir, f'per_pc_metrics_summary_{cn_encoding}.csv'),
+            index=False
+        )
+        traj_summary_enc.to_csv(
+            os.path.join(metrics_dir, f'trajectory_metrics_summary_{cn_encoding}.csv'),
+            index=False
+        )
+
+        if not df_recon.empty:
+            recon_merge = df_recon.merge(df_obs_feat, on=key_cols, how='left')
+            for _, row in recon_merge.iterrows():
+                for feat in frozen.feature_order:
+                    pred = row.get(f'PredFeat_{feat}', np.nan)
+                    obs = row.get(feat, np.nan)
+                    if pd.isna(pred) or pd.isna(obs):
+                        continue
+                    feat_err_rows.append({
+                        'CN_Encoding': cn_encoding,
+                        'Split_Type': row['Split_Type'],
+                        'Fold': row['Fold'],
+                        'Model': row['Model'],
+                        'Feature': feat,
+                        'Abs_Error': abs(float(pred) - float(obs)),
+                        'Sq_Error': (float(pred) - float(obs)) ** 2,
+                    })
+
+        df_feat_err = pd.DataFrame(feat_err_rows)
+        if not df_feat_err.empty:
+            df_feat_err.to_csv(
+                os.path.join(metrics_dir, f'feature_reconstruction_errors_long_{cn_encoding}.csv'),
                 index=False
             )
-            save_high_cn_trajectory_plot(
-                df_extrap_preds,
-                df_extrap,
-                target_pcs,
-                os.path.join(metrics_dir, 'high_cn_extrapolation_trajectory_paths.png')
+            feat_summary = (
+                df_feat_err.groupby(['CN_Encoding', 'Split_Type', 'Model', 'Feature'], as_index=False)
+                .agg(MAE=('Abs_Error', 'mean'), RMSE=('Sq_Error', lambda s: float(np.sqrt(np.mean(s)))))
             )
+            feat_summary.to_csv(
+                os.path.join(metrics_dir, f'feature_reconstruction_errors_summary_{cn_encoding}.csv'),
+                index=False
+            )
+            save_feature_deconvolution_plot(
+                feat_summary,
+                os.path.join(metrics_dir, f'feature_reconstruction_errors_summary_{cn_encoding}.png')
+            )
+
+        # Custom train/test holdout scenario.
+        available_experiments = set(df_model['Experiment'].astype(str).unique())
+        requested_train_exps = [str(x) for x in args.stress_train_experiments]
+        requested_test_exps = [str(x) for x in args.stress_test_experiments]
+        overlap_exps = sorted(set(requested_train_exps).intersection(set(requested_test_exps)))
+        if overlap_exps:
+            raise ValueError(
+                f'Stress-test train/test experiment lists overlap: {", ".join(overlap_exps)}'
+            )
+
+        train_exps = [e for e in requested_train_exps if e in available_experiments]
+        test_exps = [e for e in requested_test_exps if e in available_experiments]
+        missing_train = sorted(set(requested_train_exps) - set(train_exps))
+        missing_test = sorted(set(requested_test_exps) - set(test_exps))
+        if missing_train:
+            print(f"[warn] Stress-test train experiments missing from data: {', '.join(missing_train)}")
+        if missing_test:
+            print(f"[warn] Stress-test test experiments missing from data: {', '.join(missing_test)}")
+
+        if train_exps and test_exps:
+            test_mask = df_model['Experiment'].isin(test_exps).values
+            train_mask = df_model['Experiment'].isin(train_exps).values
+            if np.sum(train_mask) > 5 and np.sum(test_mask) > 3:
+                X_train = X_model[train_mask].copy()
+                X_test = X_model[test_mask].copy()
+                if exp_feature_idx:
+                    X_test[:, exp_feature_idx] = 0.0
+                Y_train, Y_test = Y[train_mask], Y[test_mask]
+                fold_meta = df_model.loc[test_mask, key_cols].reset_index(drop=True)
+                scenario_name = 'custom_train_test_holdout'
+
+                for model_name in model_order:
+                    gam_lam_used = np.nan
+                    gam_tuned = False
+                    if model_name == 'spline':
+                        gam_lam_used = float(args.gam_lam)
+                        if args.gam_tune_lam:
+                            tuned_lam, df_tune = tune_gam_lam_nested(
+                                X_train=X_train,
+                                Y_train=Y_train,
+                                lam_grid=args.gam_lam_grid,
+                                n_inner_splits=args.gam_inner_splits,
+                                inner_test_size=args.gam_inner_test_size,
+                                seed=args.seed,
+                                n_knots=args.gam_knots,
+                                alpha=args.gam_alpha,
+                            )
+                            gam_lam_used = float(tuned_lam)
+                            gam_tuned = True
+                            if not df_tune.empty:
+                                df_t = df_tune.copy()
+                                df_t['CN_Encoding'] = cn_encoding
+                                df_t['Split_Type'] = 'CUSTOM_STRESS'
+                                df_t['Fold'] = 'custom_train_test_holdout'
+                                df_t['Selected_Lam'] = gam_lam_used
+                                df_t['Is_Selected'] = np.isclose(df_t['Candidate_Lam'].values, gam_lam_used)
+                                gam_tune_rows.append(df_t)
+                        model = MultiTargetGAMLike(
+                            n_knots=args.gam_knots,
+                            alpha=args.gam_alpha,
+                            lam=float(gam_lam_used),
+                        )
+                    else:
+                        model = model_builders[model_name]()
+                    model.fit(X_train, Y_train)
+                    Y_pred = model.predict(X_test)
+
+                    pm_list = per_pc_metrics(Y_test, Y_pred, target_pcs)
+                    for pm in pm_list:
+                        extrap_rows.append({
+                            'CN_Encoding': cn_encoding,
+                            'Model': model_name,
+                            'PC': pm['PC'],
+                            'R2': pm['R2'],
+                            'RMSE': pm['RMSE'],
+                            'MAE': pm['MAE'],
+                            'GAM_Lam': gam_lam_used,
+                            'GAM_Tuned': gam_tuned,
+                            'Train_Experiments': ';'.join(train_exps),
+                            'Test_Experiments': ';'.join(test_exps),
+                            'Scenario': scenario_name,
+                        })
+
+                    pred_df = fold_meta.copy()
+                    for i, pc in enumerate(target_pcs):
+                        pred_df[f'True_{pc}'] = Y_test[:, i]
+                        pred_df[f'Pred_{pc}'] = Y_pred[:, i]
+                    pred_df['CN_Encoding'] = cn_encoding
+                    pred_df['Model'] = model_name
+                    pred_df['GAM_Lam'] = gam_lam_used
+                    pred_df['GAM_Tuned'] = gam_tuned
+                    pred_df['Scenario'] = scenario_name
+                    extrap_pred_rows.append(pred_df.copy())
+                    t_metrics = trajectory_metrics(pred_df, target_pcs)
+                    extrap_rows.append({
+                        'CN_Encoding': cn_encoding,
+                        'Model': model_name,
+                        'PC': 'TRAJECTORY',
+                        'R2': np.nan,
+                        'RMSE': t_metrics['Centroid_Path_Error'],
+                        'MAE': t_metrics['Endpoint_Error'],
+                        'GAM_Lam': gam_lam_used,
+                        'GAM_Tuned': gam_tuned,
+                        'Train_Experiments': ';'.join(train_exps),
+                        'Test_Experiments': ';'.join(test_exps),
+                        'Scenario': scenario_name,
+                        'Direction_Angle_Error_Deg': t_metrics['Direction_Angle_Error_Deg'],
+                    })
+            else:
+                print(
+                    '[warn] Not enough samples for custom stress-test holdout: '
+                    f'train_n={int(np.sum(train_mask))}, test_n={int(np.sum(test_mask))}'
+                )
+        else:
+            print('[warn] Custom stress-test holdout skipped due to empty train or test experiment set.')
+
+        df_extrap = pd.DataFrame(extrap_rows)
+        if not df_extrap.empty:
+            df_extrap.to_csv(
+                os.path.join(metrics_dir, f'high_cn_extrapolation_metrics_{cn_encoding}.csv'),
+                index=False
+            )
+            save_high_cn_extrapolation_performance_plot(
+                df_extrap,
+                os.path.join(metrics_dir, f'high_cn_extrapolation_performance_{cn_encoding}.png')
+            )
+            if extrap_pred_rows:
+                df_extrap_preds = pd.concat(extrap_pred_rows, ignore_index=True)
+                df_extrap_preds.to_csv(
+                    os.path.join(preds_dir, f'high_cn_extrapolation_pc_predictions_{cn_encoding}.csv'),
+                    index=False
+                )
+                save_high_cn_trajectory_plot(
+                    df_extrap_preds,
+                    df_extrap,
+                    target_pcs,
+                    os.path.join(metrics_dir, f'high_cn_extrapolation_trajectory_paths_{cn_encoding}.png')
+                )
+        else:
+            df_extrap_preds = pd.DataFrame()
+
+        df_gam_tune = pd.concat(gam_tune_rows, ignore_index=True) if gam_tune_rows else pd.DataFrame()
+        if not df_gam_tune.empty:
+            df_gam_tune.to_csv(
+                os.path.join(metrics_dir, f'gam_lam_tuning_by_fold_{cn_encoding}.csv'),
+                index=False
+            )
+            all_gam_tune_frames.append(df_gam_tune)
+
+        # Collect for combined exports.
+        all_metric_frames.append(df_metrics)
+        all_traj_frames.append(df_traj)
+        all_fold_pred_frames.append(df_fold_preds)
+        all_recon_frames.append(df_recon)
+        if not df_feat_err.empty:
+            all_feat_err_frames.append(df_feat_err)
+        if not df_extrap.empty:
+            all_extrap_frames.append(df_extrap)
+        if not df_extrap_preds.empty:
+            all_extrap_pred_frames.append(df_extrap_preds)
+
+        encoding_run_configs[cn_encoding] = {
+            'input_feature_cols': input_feature_cols,
+            'experiment_ohe_cols': exp_ohe_cols,
+            'exp_feature_idx': exp_feature_idx,
+        }
+
+    # Combined exports across CN encodings.
+    df_metrics = pd.concat(all_metric_frames, ignore_index=True) if all_metric_frames else pd.DataFrame()
+    df_traj = pd.concat(all_traj_frames, ignore_index=True) if all_traj_frames else pd.DataFrame()
+    df_fold_preds = pd.concat(all_fold_pred_frames, ignore_index=True) if all_fold_pred_frames else pd.DataFrame()
+    df_recon = pd.concat(all_recon_frames, ignore_index=True) if all_recon_frames else pd.DataFrame()
+    df_feat_err = pd.concat(all_feat_err_frames, ignore_index=True) if all_feat_err_frames else pd.DataFrame()
+    df_extrap = pd.concat(all_extrap_frames, ignore_index=True) if all_extrap_frames else pd.DataFrame()
+    df_extrap_preds = pd.concat(all_extrap_pred_frames, ignore_index=True) if all_extrap_pred_frames else pd.DataFrame()
+
+    df_fold_preds.to_csv(os.path.join(preds_dir, 'fold_pc_predictions.csv'), index=False)
+    df_recon.to_csv(os.path.join(preds_dir, 'fold_feature_reconstruction_predictions.csv'), index=False)
+    if not df_extrap_preds.empty:
+        df_extrap_preds.to_csv(os.path.join(preds_dir, 'high_cn_extrapolation_pc_predictions.csv'), index=False)
+
+    df_metrics.to_csv(os.path.join(metrics_dir, 'per_pc_metrics_by_fold.csv'), index=False)
+    df_traj.to_csv(os.path.join(metrics_dir, 'trajectory_metrics_by_fold.csv'), index=False)
+
+    metric_summary = (
+        df_metrics.groupby(['CN_Encoding', 'Split_Type', 'Model', 'PC'], as_index=False)[['R2', 'RMSE', 'MAE']]
+        .mean(numeric_only=True)
+    ) if not df_metrics.empty else pd.DataFrame()
+    traj_summary = (
+        df_traj.groupby(['CN_Encoding', 'Split_Type', 'Model'], as_index=False)[
+            ['Centroid_Path_Error', 'Endpoint_Error', 'Direction_Angle_Error_Deg']
+        ].mean(numeric_only=True)
+    ) if not df_traj.empty else pd.DataFrame()
+    metric_summary.to_csv(os.path.join(metrics_dir, 'per_pc_metrics_summary.csv'), index=False)
+    traj_summary.to_csv(os.path.join(metrics_dir, 'trajectory_metrics_summary.csv'), index=False)
+
+    if not df_feat_err.empty:
+        df_feat_err.to_csv(os.path.join(metrics_dir, 'feature_reconstruction_errors_long.csv'), index=False)
+        feat_summary = (
+            df_feat_err.groupby(['CN_Encoding', 'Split_Type', 'Model', 'Feature'], as_index=False)
+            .agg(MAE=('Abs_Error', 'mean'), RMSE=('Sq_Error', lambda s: float(np.sqrt(np.mean(s)))))
+        )
+        feat_summary.to_csv(os.path.join(metrics_dir, 'feature_reconstruction_errors_summary.csv'), index=False)
+
+    if not df_extrap.empty:
+        df_extrap.to_csv(os.path.join(metrics_dir, 'high_cn_extrapolation_metrics.csv'), index=False)
+    if all_gam_tune_frames:
+        pd.concat(all_gam_tune_frames, ignore_index=True).to_csv(
+            os.path.join(metrics_dir, 'gam_lam_tuning_by_fold.csv'),
+            index=False
+        )
 
     # Run manifest
     manifest = {
@@ -1341,32 +1684,52 @@ def run(args):
         'target_pcs': args.target_pcs,
         'target_pc_names': target_pcs,
         'organoid_limit': args.organoid_limit,
+        'cluster_size_endo_mode': args.cluster_size_endo_mode,
         'cn_map': cn_map,
         'cn_cells': args.cn_cells,
+        'cn_encodings': cn_encodings,
         'seed': args.seed,
         'custom_stress_holdout': {
             'train_experiments': [str(x) for x in args.stress_train_experiments],
             'test_experiments': [str(x) for x in args.stress_test_experiments],
         },
+        'evaluation_splits': {
+            'random_enabled': args.eval_random,
+            'random_splits': args.random_splits,
+            'random_test_size': args.random_test_size,
+            'lor_enabled': args.eval_lor,
+            'loex_enabled': args.eval_loex,
+        },
+        'gam_tuning': {
+            'enabled': args.gam_tune_lam,
+            'default_lam': args.gam_lam,
+            'lam_grid': args.gam_lam_grid,
+            'tune_splits': args.gam_lam_tune_splits,
+            'inner_splits': args.gam_inner_splits,
+            'inner_test_size': args.gam_inner_test_size,
+        },
+        'encoding_run_configs': encoding_run_configs,
         'models': {
             'ridge_linear': {
                 'alpha': args.ridge_alpha,
-                'inputs': input_feature_cols,
-                'loex_test_override': 'ExperimentID_* columns forced to 0 at prediction time',
+                'definition': 'StandardScaler + Ridge on selected input columns per CN encoding.',
+                'loex_test_override': 'ExperimentID_* columns are forced to 0 at LOEX prediction time.',
             },
             'poly_ridge': {
                 'alpha': args.poly_alpha,
                 'mode': args.poly_mode,
                 'degree': args.poly_degree,
-                'inputs': input_feature_cols,
                 'inputs_selected_mode': selected_poly_feature_names(exp_ohe_cols),
-                'loex_test_override': 'ExperimentID_* columns forced to 0 at prediction time',
+                'definition': 'Polynomial feature expansion + StandardScaler + Ridge.',
+                'loex_test_override': 'ExperimentID_* columns are forced to 0 at LOEX prediction time.',
             },
             'spline': {
                 'gam_knots': args.gam_knots,
                 'alpha_fallback': args.gam_alpha,
-                'inputs': input_feature_cols,
-                'loex_test_override': 'ExperimentID_* columns forced to 0 at prediction time',
+                'definition': 'pyGAM if available; otherwise spline-basis + Ridge fallback.',
+                'loex_test_override': 'ExperimentID_* columns are forced to 0 at LOEX prediction time.',
+                'default_lam': args.gam_lam,
+                'lam_tuning_enabled': args.gam_tune_lam,
             },
         },
         'valid_features': frozen.feature_order,
@@ -1384,6 +1747,8 @@ def run(args):
         f.write(f'- Experiments: {", ".join(experiments)}\n')
         f.write(f'- PCA basis (effective): `{frozen.pca_fit_basis}`\n')
         f.write(f'- Replicate adjust: `{args.replicate_adjust}`\n')
+        f.write(f'- Cluster_Size_Endo mode: `{args.cluster_size_endo_mode}`\n')
+        f.write(f'- CN encodings: {", ".join(cn_encodings)}\n')
         f.write(f'- Target PCs: {", ".join(target_pcs)}\n\n')
         f.write(
             f'- Custom stress holdout train: {", ".join([str(x) for x in args.stress_train_experiments])}\n'
@@ -1430,6 +1795,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--organoid-limit', type=int, default=3,
                         help='Organoids per (replicate,dox). <=0 uses all.')
+    parser.add_argument('--cluster-size-endo-mode', choices=['keep', 'drop', 'log1p'], default='keep',
+                        help='Ablation mode for Cluster_Size_Endo before normalization/PCA.')
     parser.add_argument('--max-components', type=int, default=5,
                         help='Upper bound for frozen PCA components.')
     parser.add_argument('--target-pcs', type=int, default=3,
@@ -1440,6 +1807,9 @@ if __name__ == '__main__':
                         help='CN lambda map, format exp:lambda,exp:lambda')
     parser.add_argument('--cn-cells', type=int, default=100,
                         help='Number of virtual cells per organoid for Poisson CN sampling.')
+    parser.add_argument('--cn-encodings', nargs='+', default=['lambda', 'sample_mean', 'summary'],
+                        choices=['all', 'lambda', 'sample_mean', 'summary'],
+                        help='CN input encoding ablation set.')
 
     parser.add_argument('--ridge-alpha', type=float, default=1.0)
     parser.add_argument('--poly-alpha', type=float, default=1.0)
@@ -1447,6 +1817,19 @@ if __name__ == '__main__':
                         help='Poly basis: selected terms (agreed biology-driven basis) or full sklearn PolynomialFeatures.')
     parser.add_argument('--poly-degree', type=int, default=3,
                         help='Polynomial degree when --poly-mode full (ignored for selected mode).')
+    parser.add_argument('--gam-lam', type=float, default=1.0,
+                        help='Default pyGAM smoothing lambda when tuning is disabled.')
+    parser.add_argument('--gam-tune-lam', action=argparse.BooleanOptionalAction, default=False,
+                        help='Enable nested inner-CV tuning over --gam-lam-grid.')
+    parser.add_argument('--gam-lam-grid', nargs='+', type=float, default=[0.01, 0.1, 1.0, 10.0, 100.0],
+                        help='Candidate lambda values for pyGAM tuning.')
+    parser.add_argument('--gam-lam-tune-splits', nargs='+', default=['LOEX'],
+                        choices=['RANDOM', 'LOR', 'LOEX'],
+                        help='Outer split types where GAM lambda tuning is applied.')
+    parser.add_argument('--gam-inner-splits', type=int, default=3,
+                        help='Number of inner random splits for GAM lambda tuning.')
+    parser.add_argument('--gam-inner-test-size', type=float, default=0.2,
+                        help='Inner random split test fraction for GAM lambda tuning.')
     parser.add_argument('--gam-alpha', type=float, default=1.0)
     parser.add_argument('--gam-knots', type=int, default=5)
 
@@ -1454,6 +1837,12 @@ if __name__ == '__main__':
                         help='Evaluate leave-one-(experiment,replicate)-out splits.')
     parser.add_argument('--eval-loex', action=argparse.BooleanOptionalAction, default=True,
                         help='Evaluate leave-one-experiment-out splits.')
+    parser.add_argument('--eval-random', action=argparse.BooleanOptionalAction, default=True,
+                        help='Evaluate random sample-level CV splits (optimistic baseline).')
+    parser.add_argument('--random-splits', type=int, default=10,
+                        help='Number of random CV splits when --eval-random is enabled.')
+    parser.add_argument('--random-test-size', type=float, default=0.2,
+                        help='Fraction of samples in random test split.')
     parser.add_argument('--stress-train-experiments', nargs='+', default=['exp1', 'exp2_high_cn'],
                         help='Custom stress-test training experiments.')
     parser.add_argument('--stress-test-experiments', nargs='+', default=['exp2_low_cn'],

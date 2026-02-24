@@ -1,0 +1,161 @@
+{
+  "run_stamp": "20260224_170031",
+  "experiments": [
+    "exp1",
+    "exp2_high_cn",
+    "exp2_low_cn"
+  ],
+  "replicate_adjust": "residualized",
+  "trajectory_group_by": "experiment",
+  "pca_fit_basis_requested": "exp_dox_centroids",
+  "pca_fit_basis_effective": "exp_dox_centroids",
+  "max_components": 5,
+  "target_pcs": 3,
+  "target_pc_names": [
+    "PC1",
+    "PC2",
+    "PC3"
+  ],
+  "organoid_limit": 3,
+  "cn_map": {
+    "exp1": 4.5,
+    "exp2_high_cn": 9.0,
+    "exp2_low_cn": 4.0
+  },
+  "cn_cells": 100,
+  "cn_encodings": [
+    "lambda",
+    "sample_mean",
+    "summary"
+  ],
+  "seed": 42,
+  "custom_stress_holdout": {
+    "train_experiments": [
+      "exp1",
+      "exp2_low_cn"
+    ],
+    "test_experiments": [
+      "exp2_high_cn"
+    ]
+  },
+  "encoding_run_configs": {
+    "lambda": {
+      "input_feature_cols": [
+        "Dox_Log1p10",
+        "CN_Lambda",
+        "ExperimentID_exp1",
+        "ExperimentID_exp2_high_cn",
+        "ExperimentID_exp2_low_cn"
+      ],
+      "experiment_ohe_cols": [
+        "ExperimentID_exp1",
+        "ExperimentID_exp2_high_cn",
+        "ExperimentID_exp2_low_cn"
+      ],
+      "exp_feature_idx": [
+        2,
+        3,
+        4
+      ]
+    },
+    "sample_mean": {
+      "input_feature_cols": [
+        "Dox_Log1p10",
+        "CN_Sample_Mean",
+        "ExperimentID_exp1",
+        "ExperimentID_exp2_high_cn",
+        "ExperimentID_exp2_low_cn"
+      ],
+      "experiment_ohe_cols": [
+        "ExperimentID_exp1",
+        "ExperimentID_exp2_high_cn",
+        "ExperimentID_exp2_low_cn"
+      ],
+      "exp_feature_idx": [
+        2,
+        3,
+        4
+      ]
+    },
+    "summary": {
+      "input_feature_cols": [
+        "Dox_Log1p10",
+        "CN_Sample_Mean",
+        "CN_Sample_Std",
+        "CN_Sample_P10",
+        "CN_Sample_P50",
+        "CN_Sample_P90",
+        "ExperimentID_exp1",
+        "ExperimentID_exp2_high_cn",
+        "ExperimentID_exp2_low_cn"
+      ],
+      "experiment_ohe_cols": [
+        "ExperimentID_exp1",
+        "ExperimentID_exp2_high_cn",
+        "ExperimentID_exp2_low_cn"
+      ],
+      "exp_feature_idx": [
+        6,
+        7,
+        8
+      ]
+    }
+  },
+  "models": {
+    "ridge_linear": {
+      "alpha": 1.0,
+      "definition": "StandardScaler + Ridge on selected input columns per CN encoding.",
+      "loex_test_override": "ExperimentID_* columns are forced to 0 at LOEX prediction time."
+    },
+    "poly_ridge": {
+      "alpha": 1.0,
+      "mode": "selected",
+      "degree": 3,
+      "inputs_selected_mode": [
+        "Dox_Log1p10",
+        "Dox_Log1p10^2",
+        "Dox_Log1p10^3",
+        "CN_Primary",
+        "Dox_Log1p10*CN_Primary",
+        "Dox_Log1p10^2*CN_Primary",
+        "ExperimentID_exp1",
+        "ExperimentID_exp2_high_cn",
+        "ExperimentID_exp2_low_cn"
+      ],
+      "definition": "Polynomial feature expansion + StandardScaler + Ridge.",
+      "loex_test_override": "ExperimentID_* columns are forced to 0 at LOEX prediction time."
+    },
+    "spline": {
+      "gam_knots": 5,
+      "alpha_fallback": 1.0,
+      "definition": "pyGAM if available; otherwise spline-basis + Ridge fallback.",
+      "loex_test_override": "ExperimentID_* columns are forced to 0 at LOEX prediction time."
+    }
+  },
+  "valid_features": [
+    "Total_Cells",
+    "Pct_Endo",
+    "Pct_Meso",
+    "Radial_Mean_Endo",
+    "Radial_Std_Endo",
+    "Radial_Mean_Meso",
+    "Radial_Std_Meso",
+    "NMS_Endo",
+    "NMS_Meso",
+    "Cluster_Count_Endo",
+    "Cluster_Count_Meso",
+    "Cluster_Size_Endo",
+    "Cluster_Size_Meso",
+    "Intra_Distance_Endo",
+    "Intra_Distance_Meso",
+    "Inter_Distance",
+    "Adjacency_Pct"
+  ],
+  "explained_variance_ratio": [
+    0.4888182132747541,
+    0.23888225357562123,
+    0.10071337750727444,
+    0.06085138253104498,
+    0.047533938112925535
+  ]
+}
