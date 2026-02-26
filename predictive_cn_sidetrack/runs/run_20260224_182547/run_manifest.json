@@ -1,0 +1,146 @@
+{
+  "run_stamp": "20260224_182547",
+  "experiments": [
+    "exp1",
+    "exp2_high_cn",
+    "exp2_low_cn"
+  ],
+  "replicate_adjust": "residualized",
+  "trajectory_group_by": "experiment",
+  "pca_fit_basis_requested": "exp_dox_centroids",
+  "pca_fit_basis_effective": "exp_dox_centroids",
+  "max_components": 5,
+  "target_pcs": 3,
+  "target_pc_names": [
+    "PC1",
+    "PC2",
+    "PC3"
+  ],
+  "organoid_limit": 3,
+  "cluster_size_endo_mode": "drop",
+  "cn_map": {
+    "exp1": 4.5,
+    "exp2_high_cn": 9.0,
+    "exp2_low_cn": 4.0
+  },
+  "cn_cells": 100,
+  "cn_encodings": [
+    "summary"
+  ],
+  "seed": 42,
+  "custom_stress_holdout": {
+    "train_experiments": [
+      "exp1",
+      "exp2_low_cn"
+    ],
+    "test_experiments": [
+      "exp2_high_cn"
+    ]
+  },
+  "evaluation_splits": {
+    "random_enabled": true,
+    "random_splits": 8,
+    "random_test_size": 0.2,
+    "lor_enabled": true,
+    "loex_enabled": false
+  },
+  "gam_tuning": {
+    "enabled": false,
+    "default_lam": 1.0,
+    "lam_grid": [
+      0.01,
+      0.1,
+      1.0,
+      10.0,
+      100.0
+    ],
+    "tune_splits": [
+      "LOEX"
+    ],
+    "inner_splits": 3,
+    "inner_test_size": 0.2
+  },
+  "encoding_run_configs": {
+    "summary": {
+      "input_feature_cols": [
+        "Dox_Log1p10",
+        "CN_Sample_Mean",
+        "CN_Sample_Std",
+        "CN_Sample_P10",
+        "CN_Sample_P50",
+        "CN_Sample_P90",
+        "ExperimentID_exp1",
+        "ExperimentID_exp2_high_cn",
+        "ExperimentID_exp2_low_cn"
+      ],
+      "experiment_ohe_cols": [
+        "ExperimentID_exp1",
+        "ExperimentID_exp2_high_cn",
+        "ExperimentID_exp2_low_cn"
+      ],
+      "exp_feature_idx": [
+        6,
+        7,
+        8
+      ]
+    }
+  },
+  "models": {
+    "ridge_linear": {
+      "alpha": 1.0,
+      "definition": "StandardScaler + Ridge on selected input columns per CN encoding.",
+      "loex_test_override": "ExperimentID_* columns are forced to 0 at LOEX prediction time."
+    },
+    "poly_ridge": {
+      "alpha": 1.0,
+      "mode": "full",
+      "degree": 3,
+      "inputs_selected_mode": [
+        "Dox_Log1p10",
+        "Dox_Log1p10^2",
+        "Dox_Log1p10^3",
+        "CN_Primary",
+        "Dox_Log1p10*CN_Primary",
+        "Dox_Log1p10^2*CN_Primary",
+        "ExperimentID_exp1",
+        "ExperimentID_exp2_high_cn",
+        "ExperimentID_exp2_low_cn"
+      ],
+      "definition": "Polynomial feature expansion + StandardScaler + Ridge.",
+      "loex_test_override": "ExperimentID_* columns are forced to 0 at LOEX prediction time."
+    },
+    "spline": {
+      "gam_knots": 5,
+      "alpha_fallback": 1.0,
+      "definition": "pyGAM if available; otherwise spline-basis + Ridge fallback.",
+      "loex_test_override": "ExperimentID_* columns are forced to 0 at LOEX prediction time.",
+      "default_lam": 1.0,
+      "lam_tuning_enabled": false
+    }
+  },
+  "valid_features": [
+    "Total_Cells",
+    "Pct_Endo",
+    "Pct_Meso",
+    "Radial_Mean_Endo",
+    "Radial_Std_Endo",
+    "Radial_Mean_Meso",
+    "Radial_Std_Meso",
+    "NMS_Endo",
+    "NMS_Meso",
+    "Cluster_Count_Endo",
+    "Cluster_Count_Meso",
+    "Cluster_Size_Meso",
+    "Intra_Distance_Endo",
+    "Intra_Distance_Meso",
+    "Inter_Distance",
+    "Adjacency_Pct"
+  ],
+  "explained_variance_ratio": [
+    0.5105283735303352,
+    0.24724975244555686,
+    0.0847393905755333,
+    0.056993006133922795,
+    0.03953163481223484
+  ]
+}
