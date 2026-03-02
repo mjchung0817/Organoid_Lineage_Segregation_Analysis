@@ -25,12 +25,20 @@ DATASET_MAP = {
 # Calibration Constants
 RADIUS, EPSILON, MIN_SAMPLES = 100.0, 30.0, 20
 
+ERRORBAR_LABELS = {
+    'sd': 'SD',
+    'se': 'SE',
+    'ci95': '95% CI',
+    'none': 'No Error Bar'
+}
+
 # ==============================================================================
 # HELPER: FILTER TO FIRST 3 ORGANOIDS PER REPLICATE PER CONDITION
 # ==============================================================================
 def filter_first_3_organoids(file_list):
     """
-    Group files by replicate and condition, keep only first 3 organoids numerically.
+    Group files by replicate, dox, and condition, then keep only the first
+    3 organoids numerically within each group.
     """
     grouped = {}
     for fpath in file_list:
@@ -47,7 +55,10 @@ def filter_first_3_organoids(file_list):
             continue
         org_num = int(org_match.group(1))
 
-        key = (replicate, dox)
+        cond_match = re.search(r"\+(.+?)_", fname)
+        condition = cond_match.group(1).upper() if cond_match else "BASAL"
+
+        key = (replicate, dox, condition)
         if key not in grouped:
             grouped[key] = []
         grouped[key].append((org_num, fpath))
@@ -127,10 +138,23 @@ def get_spatial_metrics(df):
 
     return results
 
+
+def resolve_errorbar(errorbar_mode):
+    if errorbar_mode == 'sd':
+        return 'sd'
+    if errorbar_mode == 'se':
+        return 'se'
+    if errorbar_mode == 'ci95':
+        return ('ci', 95)
+    if errorbar_mode == 'none':
+        return None
+    raise ValueError(f"Unsupported errorbar mode: {errorbar_mode}")
+
 # ==============================================================================
 # MAIN COMPARISON FUNCTION
 # ==============================================================================
-def run_delta_analysis(baseline_path, baseline_label, treatment_path, treatment_label, output_dir):
+def run_delta_analysis(baseline_path, baseline_label, treatment_path, treatment_label, output_dir,
+                       errorbar_mode='sd', save_nms_only=True):
     # Data scraping & audit
     all_data = []
     for exp_tag, base_path in [(baseline_label, baseline_path), (treatment_label, treatment_path)]:
@@ -220,6 +244,8 @@ def run_delta_analysis(baseline_path, baseline_label, treatment_path, treatment_
     # Visualization Setup
     sns.set_context("talk")
     palette = {'Endo': '#d62728', 'Meso': '#1fb471'}
+    errorbar_spec = resolve_errorbar(errorbar_mode)
+    errorbar_label = ERRORBAR_LABELS[errorbar_mode]
 
     # Create a marker style mapping for replicates (for the stripplot overlay)
     unique_reps = sorted(comp_df['Rep'].unique())
@@ -250,6 +276,7 @@ def run_delta_analysis(baseline_path, baseline_label, treatment_path, treatment_
             }
 
             metric_df = dose_long_df[dose_long_df['Type'] == m_type].copy()
+            metric_df = metric_df.dropna(subset=['value'])
             if metric_df.empty:
                 axes[i].set_visible(False)
                 continue
@@ -258,7 +285,7 @@ def run_delta_analysis(baseline_path, baseline_label, treatment_path, treatment_
 
             # 1. Barplot for mean % change
             sns.barplot(data=metric_df, x='Condition', y='value', hue='Lineage',
-                        palette=palette, ax=axes[i], capsize=.1, errorbar='se')
+                        palette=palette, ax=axes[i], capsize=.1, errorbar=errorbar_spec)
 
             # 1.5. Add mean markers (diamonds) to verify bar heights
             # Position diamonds to match barplot: Endo LEFT (-0.2), Meso RIGHT (+0.2)
@@ -302,7 +329,7 @@ def run_delta_analysis(baseline_path, baseline_label, treatment_path, treatment_
         axes[-1].legend(handles=axes[-1].get_legend_handles_labels()[0] + rep_handles,
                         loc='upper right', fontsize=9)
 
-        plt.suptitle(f"{treatment_label} vs {baseline_label} | {dose}ng/mL Dox",
+        plt.suptitle(f"{treatment_label} vs {baseline_label} | {dose}ng/mL Dox | Bars = mean ± {errorbar_label}",
                      fontsize=24, fontweight='bold', y=0.98)
         plt.tight_layout(rect=[0, 0.02, 1, 0.96])
 
@@ -311,6 +338,58 @@ def run_delta_analysis(baseline_path, baseline_label, treatment_path, treatment_
         plt.savefig(output_file, dpi=300, bbox_inches='tight')
         print(f"✓ Saved: {output_file}")
         plt.close()
+
+        if save_nms_only:
+            nms_df = dose_long_df[dose_long_df['Type'] == 'nms'].copy()
+            nms_df = nms_df.dropna(subset=['value'])
+            if not nms_df.empty:
+                fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+                conditions = list(nms_df['Condition'].dropna().unique())
+
+                sns.barplot(data=nms_df, x='Condition', y='value', hue='Lineage',
+                            palette=palette, ax=ax, capsize=.1, errorbar=errorbar_spec)
+
+                for condition_idx, condition in enumerate(conditions):
+                    for lineage in ['Endo', 'Meso']:
+                        subset = nms_df[(nms_df['Condition'] == condition) & (nms_df['Lineage'] == lineage)]
+                        if not subset.empty:
+                            mean_val = subset['value'].mean()
+                            x_pos = condition_idx + (-0.2 if lineage == 'Endo' else 0.2)
+                            ax.scatter([x_pos], [mean_val], marker='D', s=120,
+                                       color='black', edgecolors='white', linewidths=2,
+                                       zorder=10, label='_nolegend_')
+
+                for lineage in ['Endo', 'Meso']:
+                    lineage_df = nms_df[nms_df['Lineage'] == lineage]
+                    for rep in unique_reps:
+                        rep_df = lineage_df[lineage_df['Rep'] == rep]
+                        if not rep_df.empty:
+                            x_vals = [conditions.index(cond) for cond in rep_df['Condition']]
+                            dodge_offset = -0.2 if lineage == 'Endo' else 0.2
+                            x_jittered = [x + dodge_offset + np.random.uniform(-0.08, 0.08) for x in x_vals]
+                            ax.scatter(x_jittered, rep_df['value'].values,
+                                       color=palette[lineage], marker=rep_markers[rep],
+                                       s=80, alpha=0.7, edgecolors='white',
+                                       linewidths=0.5, zorder=3)
+
+                rep_handles = [Line2D([0], [0], marker=rep_markers[rep], color='gray',
+                                      linestyle='None', markersize=8, label=rep)
+                               for rep in unique_reps]
+                lineage_handles, lineage_labels = ax.get_legend_handles_labels()
+                ax.legend(handles=lineage_handles + rep_handles,
+                          labels=lineage_labels + list(unique_reps),
+                          loc='upper right', fontsize=9)
+                ax.set_title("Metric: NMS (Absolute Δ)", fontweight='bold', pad=20)
+                ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
+                ax.set_ylabel("Δ from Baseline")
+                ax.set_xlabel("")
+                plt.suptitle(f"{treatment_label} vs {baseline_label} | {dose}ng/mL Dox | NMS Only | Bars = mean ± {errorbar_label}",
+                             fontsize=18, fontweight='bold', y=0.98)
+                plt.tight_layout(rect=[0, 0.02, 1, 0.95])
+                nms_output_file = os.path.join(output_dir, f"{baseline_label}_vs_{treatment_label}_{dose}ng_NMS_Delta_Analysis.png")
+                plt.savefig(nms_output_file, dpi=300, bbox_inches='tight')
+                print(f"✓ Saved: {nms_output_file}")
+                plt.close()
 
 # ==============================================================================
 # MAIN EXECUTION
@@ -325,6 +404,11 @@ if __name__ == "__main__":
                         help='Treatment experiment dataset')
     parser.add_argument('--output-dir', type=str, default='results',
                         help='Base output directory (default: results)')
+    parser.add_argument('--errorbar-mode', type=str, default='sd',
+                        choices=['sd', 'se', 'ci95', 'none'],
+                        help='Bar error bar type: sd, se, ci95, or none (default: sd)')
+    parser.add_argument('--no-save-nms-only', action='store_true',
+                        help='Disable saving the dedicated NMS-only delta plot')
 
     args = parser.parse_args()
 
@@ -346,6 +430,14 @@ if __name__ == "__main__":
     print(f"Output: {output_path}")
     print(f"{'='*80}\n")
 
-    run_delta_analysis(baseline_path, args.baseline, treatment_path, args.treatment, output_path)
+    run_delta_analysis(
+        baseline_path,
+        args.baseline,
+        treatment_path,
+        args.treatment,
+        output_path,
+        errorbar_mode=args.errorbar_mode,
+        save_nms_only=not args.no_save_nms_only
+    )
 
     print(f"\n✓ All delta analysis plots saved to: {output_path}")

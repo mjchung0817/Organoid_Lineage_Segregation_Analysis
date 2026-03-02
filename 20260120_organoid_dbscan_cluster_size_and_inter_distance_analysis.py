@@ -53,7 +53,10 @@ def filter_first_3_organoids(file_list):
             continue
         org_num = int(org_match.group(1))
 
-        key = (replicate, dox)
+        cond_match = re.search(r"\+(.+?)_", fname)
+        condition = cond_match.group(1).upper() if cond_match else "BASAL"
+
+        key = (replicate, dox, condition)
         if key not in grouped:
             grouped[key] = []
         grouped[key].append((org_num, fpath))
@@ -288,7 +291,7 @@ if __name__ == "__main__":
 
             # Bottom axis: full CI bands for the main data range
             sns.lineplot(data=df_size, x='Dox_Concentration', y='Avg_Cluster_Size', hue='Cell_Type',
-                         palette=lineage_palette, marker='o', errorbar=('ci', 95), ax=ax_bot)
+                         palette=lineage_palette, marker='o', errorbar='sd', ax=ax_bot)
             ax_bot.set_xscale('symlog', linthresh=10)
             ax_bot.set_xlim(left=0)
             ax_bot.get_legend().remove()
@@ -326,7 +329,7 @@ if __name__ == "__main__":
         else:
             ax_size = fig.add_subplot(outer_gs[0, 0])
             sns.lineplot(data=df_size, x='Dox_Concentration', y='Avg_Cluster_Size', hue='Cell_Type',
-                         palette=lineage_palette, marker='o', errorbar=('ci', 95), ax=ax_size)
+                         palette=lineage_palette, marker='o', errorbar='sd', ax=ax_size)
             ax_size.set_title("Cluster Size (Avg Cells per Cluster)", fontweight='bold')
             ax_size.set_xscale('symlog', linthresh=10)
             ax_size.set_xlim(left=0)
@@ -338,7 +341,7 @@ if __name__ == "__main__":
         ax_dist = fig.add_subplot(outer_gs[0, 1])
         if not df_dist.empty:
             sns.lineplot(data=df_dist, x='Dox_Concentration', y='Edge_to_Edge_Distance_um', hue='Cell_Type',
-                         palette=lineage_palette, marker='s', errorbar=('ci', 95), ax=ax_dist)
+                         palette=lineage_palette, marker='s', errorbar='sd', ax=ax_dist)
             ax_dist.set_title("Inter-Cluster Separation (Edge-to-Edge)", fontweight='bold')
             ax_dist.set_xscale('symlog', linthresh=10)
             ax_dist.set_xlim(left=0)
@@ -352,7 +355,7 @@ if __name__ == "__main__":
         if not df_count.empty:
             ax_count = fig.add_subplot(outer_gs[1, 0])
             sns.lineplot(data=df_count, x='Dox_Concentration', y='Cluster_Count', hue='Cell_Type',
-                         palette=lineage_palette, marker='^', errorbar=('ci', 95), ax=ax_count)
+                         palette=lineage_palette, marker='^', errorbar='sd', ax=ax_count)
             ax_count.set_title("Cluster Count (# of Clusters)", fontweight='bold')
             ax_count.set_xscale('symlog', linthresh=10)
             ax_count.set_xlim(left=0)
@@ -373,7 +376,7 @@ if __name__ == "__main__":
             nms_palette = {'Endo': '#d62728', 'Meso': '#1fb471'}
 
             sns.lineplot(data=nms_long, x='Dox_Concentration', y='NMS', hue='Lineage',
-                         palette=nms_palette, marker='D', errorbar='se', linewidth=2.5, ax=ax_nms)
+                         palette=nms_palette, marker='D', errorbar='sd', linewidth=2.5, ax=ax_nms)
             ax_nms.axhline(1.0, color='gray', linestyle='--', alpha=0.5, label='Random Mixing')
             ax_nms.set_title("Normalized Mixing Score (NMS)", fontweight='bold')
             ax_nms.set_xscale('symlog', linthresh=10)

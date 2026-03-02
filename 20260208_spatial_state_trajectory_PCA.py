@@ -67,7 +67,10 @@ def filter_first_n_organoids(file_list, n_limit=3):
         if not org_match:
             continue
         org_num = int(org_match.group(1))
-        key = (replicate, dox)
+        cond_match = re.search(r"\+(.+?)_", fname)
+        condition = cond_match.group(1).upper() if cond_match else "BASAL"
+
+        key = (replicate, dox, condition)
         if key not in grouped:
             grouped[key] = []
         grouped[key].append((org_num, fpath))
