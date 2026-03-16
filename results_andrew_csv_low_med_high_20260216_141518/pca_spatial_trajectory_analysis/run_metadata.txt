@@ -1,0 +1,9 @@
+Run_Start: 2026-03-15 13:20:35
+Run_End: 2026-03-15 13:29:17
+Runtime_Seconds: 521.82
+Experiments: exp1, exp2_high_cn, exp2_low_cn
+Replicate_Adjust: both
+Organoid_Limit: 3
+Trajectory_Grouped_By: experiment
+PCA_Fit_Basis: auto
+Group_By_Runtime: no

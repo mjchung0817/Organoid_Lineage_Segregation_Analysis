@@ -1,0 +1,30 @@
+Current Exploration: Dataset Structure
+
+3 Experiments  copy-number groups)
+- exp1: CN(POISSON DIST) group ~ 4.5
+- exp2_low_cn: CN(FIXED) group ~ 4.0
+- exp2_high_cn: CN(FIXED) group ~ 9.0
+
+Within each experiment:
+Replicate (3)
+  x Dox concentration (8 levels: 0, 10, 25, 50, 100, 250, 500, 1000 ng/mL)
+  x up to 3 organoids per (replicate, dox)
+
+Counts:
+- per dox, per experiment: 3 x 3 = up to 9 organoids
+- per experiment total: 3 x 8 x 3 = up to 72 organoids
+- across exp1 + exp2_low_cn + exp2_high_cn: up to 216 organoids
+
+Compact diagram (copy/paste):
+
+[Experiment: 3 fixed-CN groups]
+          |
+          v
+[3 Replicates / Experiment]
+          |
+          v
+[8 Dox Levels / Replicate]
+          |
+          v
+[up to 3 Organoids / (Replicate, Dox)]
+

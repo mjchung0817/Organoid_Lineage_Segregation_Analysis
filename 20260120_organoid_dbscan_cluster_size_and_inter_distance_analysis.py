@@ -6,8 +6,13 @@ import argparse
 import re
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.cluster import DBSCAN
+from collections import deque
 from scipy.spatial import cKDTree, KDTree
+
+try:
+    from sklearn.cluster import DBSCAN  # type: ignore
+except ImportError:
+    DBSCAN = None
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -26,6 +31,50 @@ PARAMS = {
     2.0: {'eps': 30, 'ms': 20, 'name': 'Endo'},
     3.0: {'eps': 30, 'ms': 20, 'name': 'Meso'}
 }
+TOTAL_CLUSTER_NAME = 'Total'
+
+
+def dbscan_labels(coords, eps, min_samples):
+    """
+    Return DBSCAN labels for coords.
+    Uses sklearn when available; otherwise uses a lightweight KDTree-based fallback.
+    """
+    if DBSCAN is not None:
+        return DBSCAN(eps=eps, min_samples=min_samples).fit(coords).labels_
+
+    n = len(coords)
+    if n == 0:
+        return np.array([], dtype=int)
+
+    tree = cKDTree(coords)
+    neighbors = tree.query_ball_point(coords, r=eps)
+    labels = np.full(n, -1, dtype=int)  # -1 = noise/unassigned
+    visited = np.zeros(n, dtype=bool)
+    cluster_id = 0
+
+    for i in range(n):
+        if visited[i]:
+            continue
+        visited[i] = True
+        neigh_i = neighbors[i]
+        if len(neigh_i) < min_samples:
+            continue
+
+        labels[i] = cluster_id
+        queue = deque(neigh_i)
+        while queue:
+            j = queue.popleft()
+            if not visited[j]:
+                visited[j] = True
+                neigh_j = neighbors[j]
+                if len(neigh_j) >= min_samples:
+                    queue.extend(neigh_j)
+            if labels[j] == -1:
+                labels[j] = cluster_id
+
+        cluster_id += 1
+
+    return labels
 
 # ==============================================================================
 # HELPER: FILTER TO FIRST 3 ORGANOIDS PER REPLICATE PER CONDITION
@@ -99,58 +148,74 @@ def run_pipeline(base_path, exp_label):
             lineage_df = df[df[target_col].isin([2.0, 3.0])].copy()
 
             # --- PER-LINEAGE METRICS ---
+            lineage_cluster_counts = {p['name']: 0 for p in PARAMS.values()}
             for ct_id, p in PARAMS.items():
                 subset = lineage_df[lineage_df[target_col] == ct_id]
-                if len(subset) < p['ms']: continue # Validity gate
-
-                coords = subset[['X', 'Y', 'Z']].values
-                db = DBSCAN(eps=p['eps'], min_samples=p['ms']).fit(coords)
-                labels = db.labels_
-                unique_labels = [l for l in np.unique(labels) if l != -1]
-
+                cluster_count = 0
                 cluster_coords_list = []
-                if len(unique_labels) > 0:
-                    # (A) Cluster Size Logic
-                    sizes = [len(coords[labels == l]) for l in unique_labels]
-                    organoid_records.append({
-                        'Experiment': exp_label,
-                        'Dox_Concentration': dox,
-                        'Replicate': replicate,
-                        'Cell_Type': p['name'],
-                        'Avg_Cluster_Size': np.mean(sizes),
-                        'File': file_name
-                    })
 
-                    # (C) Cluster Count Logic
-                    count_records.append({
-                        'Experiment': exp_label,
-                        'Dox_Concentration': dox,
-                        'Replicate': replicate,
-                        'Cell_Type': p['name'],
-                        'Cluster_Count': len(unique_labels),
-                        'File': file_name
-                    })
+                if len(subset) >= p['ms']:
+                    coords = subset[['X', 'Y', 'Z']].values
+                    labels = dbscan_labels(coords, eps=p['eps'], min_samples=p['ms'])
+                    unique_labels = [l for l in np.unique(labels) if l != -1]
+                    cluster_count = len(unique_labels)
 
-                    # (B) Edge-to-Edge Distance Logic (KDTree)
-                    for l in unique_labels:
-                        cluster_coords_list.append(coords[labels == l])
-
-                    if len(cluster_coords_list) > 1:
-                        pair_distances = []
-                        for i in range(len(cluster_coords_list)):
-                            tree_i = cKDTree(cluster_coords_list[i])
-                            for j in range(i + 1, len(cluster_coords_list)):
-                                dist, _ = tree_i.query(cluster_coords_list[j], k=1)
-                                pair_distances.append(np.min(dist))
-
-                        distance_records.append({
+                    if cluster_count > 0:
+                        # (A) Cluster Size Logic
+                        sizes = [len(coords[labels == l]) for l in unique_labels]
+                        organoid_records.append({
                             'Experiment': exp_label,
                             'Dox_Concentration': dox,
                             'Replicate': replicate,
                             'Cell_Type': p['name'],
-                            'Edge_to_Edge_Distance_um': np.mean(pair_distances),
+                            'Avg_Cluster_Size': np.mean(sizes),
                             'File': file_name
                         })
+
+                        # (B) Edge-to-Edge Distance Logic (KDTree)
+                        for l in unique_labels:
+                            cluster_coords_list.append(coords[labels == l])
+
+                        if len(cluster_coords_list) > 1:
+                            pair_distances = []
+                            for i in range(len(cluster_coords_list)):
+                                tree_i = cKDTree(cluster_coords_list[i])
+                                for j in range(i + 1, len(cluster_coords_list)):
+                                    dist, _ = tree_i.query(cluster_coords_list[j], k=1)
+                                    pair_distances.append(np.min(dist))
+
+                            distance_records.append({
+                                'Experiment': exp_label,
+                                'Dox_Concentration': dox,
+                                'Replicate': replicate,
+                                'Cell_Type': p['name'],
+                                'Edge_to_Edge_Distance_um': np.mean(pair_distances),
+                                'File': file_name
+                            })
+
+                lineage_cluster_counts[p['name']] = cluster_count
+                # (C) Cluster Count Logic (always record, including zero)
+                count_records.append({
+                    'Experiment': exp_label,
+                    'Dox_Concentration': dox,
+                    'Replicate': replicate,
+                    'Cell_Type': p['name'],
+                    'Cluster_Count': cluster_count,
+                    'File': file_name
+                })
+
+            # --- TOTAL CLUSTER COUNT (additive: Endo + Meso) ---
+            count_records.append({
+                'Experiment': exp_label,
+                'Dox_Concentration': dox,
+                'Replicate': replicate,
+                'Cell_Type': TOTAL_CLUSTER_NAME,
+                'Cluster_Count': int(
+                    lineage_cluster_counts.get('Endo', 0) +
+                    lineage_cluster_counts.get('Meso', 0)
+                ),
+                'File': file_name
+            })
 
             # --- NMS: Endo vs Meso only ---
             RADIUS = 100.0  # Same as in calc_nms script
@@ -215,6 +280,8 @@ if __name__ == "__main__":
                         help='Which experiment dataset to analyze')
     parser.add_argument('--output-dir', type=str, default='results',
                         help='Base output directory (default: results)')
+    parser.add_argument('--append-only', action='store_true',
+                        help='Only append new 3-label cluster-count outputs without overwriting existing exports.')
 
     args = parser.parse_args()
 
@@ -241,6 +308,40 @@ if __name__ == "__main__":
     csv_dist = os.path.join(output_path, f"{args.experiment}_InterCluster_Separation_Organoid_Level.csv")
     csv_count = os.path.join(output_path, f"{args.experiment}_Cluster_Count_Organoid_Level.csv")
     csv_nms = os.path.join(output_path, f"{args.experiment}_NMS_Organoid_Level.csv")
+
+    # Always save append-only cluster count artifacts with unique names
+    if not df_count.empty:
+        df_count_3label = df_count[df_count['Cell_Type'].isin(['Endo', 'Meso', 'Total'])].copy()
+        csv_count_3label = os.path.join(output_path, f"{args.experiment}_Cluster_Count_Organoid_Level_3Labels.csv")
+        df_count_3label.to_csv(csv_count_3label, index=False)
+        print(f"✓ Data saved: {csv_count_3label}")
+
+        plt.figure(figsize=(8, 5))
+        count_palette = {'Endo': '#d62728', 'Meso': '#1fb471', 'Total': '#4c78a8'}
+        sns.lineplot(
+            data=df_count_3label,
+            x='Dox_Concentration',
+            y='Cluster_Count',
+            hue='Cell_Type',
+            palette=count_palette,
+            marker='^',
+            errorbar='sd',
+            linewidth=2.2
+        )
+        plt.xscale('symlog', linthresh=10)
+        plt.xlim(left=0)
+        plt.xlabel("Dox Concentration (ng/mL)")
+        plt.ylabel("Number of Clusters")
+        plt.title("Cluster Count vs Dox (Endo / Meso / Total=Endo+Meso)")
+        plt.tight_layout()
+        count_plot_3label = os.path.join(output_path, f"{args.experiment}_Cluster_Count_3Labels_vs_Dox.png")
+        plt.savefig(count_plot_3label, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"✓ Figure saved to: {count_plot_3label}")
+
+    if args.append_only:
+        print("\nAppend-only mode complete (existing legacy outputs preserved).")
+        raise SystemExit(0)
 
     if not df_size.empty:
         df_size.to_csv(csv_size, index=False)
@@ -354,12 +455,14 @@ if __name__ == "__main__":
         # --- Panel 3: Cluster Count ---
         if not df_count.empty:
             ax_count = fig.add_subplot(outer_gs[1, 0])
+            count_palette = {'Endo': '#d62728', 'Meso': '#1fb471', 'Total': '#4c78a8'}
+            count_ymax = max(CLUSTER_COUNT_YLIM[1], int(np.ceil(df_count['Cluster_Count'].max() * 1.1)))
             sns.lineplot(data=df_count, x='Dox_Concentration', y='Cluster_Count', hue='Cell_Type',
-                         palette=lineage_palette, marker='^', errorbar='sd', ax=ax_count)
-            ax_count.set_title("Cluster Count (# of Clusters)", fontweight='bold')
+                         palette=count_palette, marker='^', errorbar='sd', ax=ax_count)
+            ax_count.set_title("Cluster Count (# of Clusters, Total=Endo+Meso)", fontweight='bold')
             ax_count.set_xscale('symlog', linthresh=10)
             ax_count.set_xlim(left=0)
-            ax_count.set_ylim(*CLUSTER_COUNT_YLIM)
+            ax_count.set_ylim(0, count_ymax)
             ax_count.set_xlabel("Dox Concentration (ng/mL)")
             ax_count.set_ylabel("Number of Clusters")
 

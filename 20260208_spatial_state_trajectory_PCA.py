@@ -37,6 +37,14 @@ PROXIMITY_THRESHOLD = 30.0
 
 MARKER_STYLES = ['o', 's', '^', 'D', 'v', 'P', 'X']
 
+# Fixed marker per experiment (shape encodes experiment identity)
+EXP_MARKERS = {
+    'exp1': 'o',
+    'exp2_low_cn': '^',
+    'exp2_high_cn': 'x',
+    'exp3': 'D',
+}
+
 DISPLAY_NAMES = {
     'NMS_Endo': 'NMS (Endo)', 'NMS_Meso': 'NMS (Meso)',
     'Total_Cells': 'Total Cells (max-norm)', 'Pct_Endo': 'Endo Fraction', 'Pct_Meso': 'Meso Fraction',
@@ -345,6 +353,120 @@ def compute_pca_group_separation(df_scores, pc_cols):
     return pd.DataFrame(records)
 
 
+def compute_consecutive_dox_distances(df_scores, experiments):
+    """
+    For each experiment, compute Euclidean distance between consecutive dox-level
+    centroids in PCA space:
+      - 2D: (PC1, PC2)
+      - 3D: (PC1, PC2, PC3) when PC3 is available
+    """
+    has_pc3 = all(c in df_scores.columns for c in ['PC1', 'PC2', 'PC3'])
+    records = []
+
+    for exp in experiments:
+        exp_data = df_scores[df_scores['Experiment'] == exp].copy()
+        if exp_data.empty:
+            continue
+
+        centroid_cols = ['PC1', 'PC2'] + (['PC3'] if has_pc3 else [])
+        centroids = (exp_data.groupby('Dox_Concentration', as_index=False)[centroid_cols]
+                     .mean()
+                     .sort_values('Dox_Concentration'))
+        if len(centroids) < 2:
+            continue
+
+        for i in range(len(centroids) - 1):
+            row_a = centroids.iloc[i]
+            row_b = centroids.iloc[i + 1]
+            dox_from = int(row_a['Dox_Concentration'])
+            dox_to = int(row_b['Dox_Concentration'])
+
+            dist_2d = float(np.linalg.norm(
+                row_b[['PC1', 'PC2']].to_numpy(dtype=float) -
+                row_a[['PC1', 'PC2']].to_numpy(dtype=float)
+            ))
+            dist_3d = (float(np.linalg.norm(
+                row_b[['PC1', 'PC2', 'PC3']].to_numpy(dtype=float) -
+                row_a[['PC1', 'PC2', 'PC3']].to_numpy(dtype=float)
+            )) if has_pc3 else np.nan)
+
+            records.append({
+                'Experiment': exp,
+                'Step_Index': i + 1,
+                'Dox_From': dox_from,
+                'Dox_To': dox_to,
+                'Dox_Transition': f"{dox_from}->{dox_to}",
+                'Distance_PC1_PC2': dist_2d,
+                'Distance_PC1_PC2_PC3': dist_3d
+            })
+
+    return pd.DataFrame(records)
+
+
+def plot_consecutive_dox_distances(df_dist, experiments, output_dir, label, mode_tag):
+    if df_dist.empty:
+        print(f"  [{mode_tag}] No consecutive dox transitions available for distance plot.")
+        return
+
+    sns.set_theme(style="whitegrid", context="talk")
+    fig, (ax2d, ax3d) = plt.subplots(1, 2, figsize=(16, 6), sharex=False)
+
+    exp_present = [e for e in experiments if e in set(df_dist['Experiment'].unique())]
+    cmap_exp = plt.cm.tab10
+    exp_colors = {exp: cmap_exp(i % 10) for i, exp in enumerate(exp_present)}
+    transition_pairs = sorted(
+        {(int(r['Dox_From']), int(r['Dox_To'])) for _, r in df_dist[['Dox_From', 'Dox_To']].iterrows()},
+        key=lambda x: (x[0], x[1])
+    )
+    transition_labels = [f"{a}->{b}" for a, b in transition_pairs]
+    transition_index = {lab: i for i, lab in enumerate(transition_labels)}
+
+    for exp in exp_present:
+        exp_data = df_dist[df_dist['Experiment'] == exp].sort_values(['Dox_From', 'Dox_To'])
+        if exp_data.empty:
+            continue
+        x_vals = exp_data['Dox_Transition'].map(transition_index).values
+        exp_marker = EXP_MARKERS.get(exp, 'o')
+
+        ax2d.plot(x_vals, exp_data['Distance_PC1_PC2'].values,
+                  marker=exp_marker, markersize=7, linewidth=2.0,
+                  color=exp_colors[exp], alpha=0.9, label=exp)
+
+        if exp_data['Distance_PC1_PC2_PC3'].notna().any():
+            ax3d.plot(x_vals, exp_data['Distance_PC1_PC2_PC3'].values,
+                      marker=exp_marker, markersize=7, linewidth=2.0,
+                      color=exp_colors[exp], alpha=0.9, label=exp)
+
+    ax2d.set_xticks(np.arange(len(transition_labels)))
+    ax2d.set_xticklabels(transition_labels, rotation=35, ha='right')
+
+    ax2d.set_title("Consecutive Dox Distance in 2D PCA", fontweight='bold')
+    ax2d.set_xlabel("Dox Transition (ng/mL)")
+    ax2d.set_ylabel("Euclidean Distance")
+    ax2d.legend(title="Experiment", fontsize=9, title_fontsize=10, loc='best')
+
+    if df_dist['Distance_PC1_PC2_PC3'].notna().any():
+        ax3d.set_xticks(np.arange(len(transition_labels)))
+        ax3d.set_xticklabels(transition_labels, rotation=35, ha='right')
+        ax3d.set_title("Consecutive Dox Distance in 3D PCA", fontweight='bold')
+        ax3d.set_xlabel("Dox Transition (ng/mL)")
+        ax3d.set_ylabel("Euclidean Distance")
+        ax3d.legend(title="Experiment", fontsize=9, title_fontsize=10, loc='best')
+    else:
+        ax3d.axis('off')
+        ax3d.text(0.5, 0.5, "PC3 not available\n(<3 PCA components)",
+                  ha='center', va='center', fontsize=12)
+
+    plt.suptitle(f"Across-Dox Step Distances in PCA Space [{mode_tag}]",
+                 fontsize=18, fontweight='bold')
+    plt.tight_layout()
+
+    output_file = os.path.join(output_dir, f"{label}_{mode_tag}_PCA_Consecutive_Dox_Distances.png")
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    print(f"  Consecutive dox distance plot saved: {output_file}")
+    plt.close()
+
+
 def residualize_by_replicate_within_dox(df_features, feature_cols):
     """
     Residualize replicate effects while preserving dox-level means.
@@ -429,7 +551,7 @@ def build_pca_fit_matrix(df_pca, valid_features, pca_fit_basis):
 # ==============================================================================
 # VISUALIZATION: MAIN PCA FIGURE
 # ==============================================================================
-def plot_pca_figure(df_scores, df_loadings, pca, experiments, valid_features,
+def plot_pca_pc1_pc2_per_experiment(df_scores, df_loadings, pca, experiments, valid_features,
                     n_components, output_dir, label, mode_tag):
     if 'PC2' not in df_scores.columns:
         print(f"\n  [{mode_tag}] Skipping PC1-PC2 figure (fewer than 2 PCs).")
@@ -462,24 +584,18 @@ def plot_pca_figure(df_scores, df_loadings, pca, experiments, valid_features,
         ax = fig.add_subplot(gs_top[ei])
         exp_data = df_scores[df_scores['Experiment'] == exp]
 
-        replicates = sorted(exp_data['Replicate'].unique())
-        rep_markers = {rep: MARKER_STYLES[i % len(MARKER_STYLES)]
-                       for i, rep in enumerate(replicates)}
-
         exp_dox = sorted(exp_data['Dox_Concentration'].unique())
+        exp_marker = EXP_MARKERS.get(exp, 'o')
 
-        # Individual organoids (color = dox, shape = replicate)
+        # Individual organoids (color = dox, shape = experiment)
         for dox in exp_dox:
-            for rep in replicates:
-                mask = ((exp_data['Dox_Concentration'] == dox) &
-                        (exp_data['Replicate'] == rep))
-                subset = exp_data[mask]
-                if subset.empty:
-                    continue
-                ax.scatter(subset['PC1'], subset['PC2'],
-                           c=[dox_colors[dox]], marker=rep_markers[rep],
-                           s=80, alpha=0.5, edgecolors='white',
-                           linewidths=0.5, zorder=3)
+            subset = exp_data[exp_data['Dox_Concentration'] == dox]
+            if subset.empty:
+                continue
+            ax.scatter(subset['PC1'], subset['PC2'],
+                       c=[dox_colors[dox]], marker=exp_marker,
+                       s=80, alpha=0.5, edgecolors='white',
+                       linewidths=0.5, zorder=3)
 
         # Mean trajectory (connect centroids)
         centroids = exp_data.groupby('Dox_Concentration')[['PC1', 'PC2']].mean()
@@ -503,20 +619,13 @@ def plot_pca_figure(df_scores, df_loadings, pca, experiments, valid_features,
         ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)")
         ax.set_title(f"{exp}", fontweight='bold')
 
-        # Dual legend: dox colors + replicate shapes
-        dox_handles = [mlines.Line2D([], [], marker='o', color='w',
-                                      markerfacecolor=dox_colors[d], markersize=8,
-                                      label=f'{d}') for d in exp_dox]
-        rep_handles = [mlines.Line2D([], [], marker=rep_markers[r], color='w',
-                                      markerfacecolor='gray', markeredgecolor='gray',
+        # Legend: dox colors
+        dox_handles = [mlines.Line2D([], [], marker=exp_marker, color='w',
+                                      markerfacecolor=dox_colors[d], markeredgecolor='gray',
                                       markersize=8,
-                                      label=r.split('_')[-1]) for r in replicates]
-
-        leg1 = ax.legend(handles=dox_handles, title="Dox (ng/mL)",
-                          loc='upper right', fontsize=6, title_fontsize=7)
-        ax.add_artist(leg1)
-        ax.legend(handles=rep_handles, title="Replicate",
-                   loc='lower right', fontsize=6, title_fontsize=7)
+                                      label=f'{d}') for d in exp_dox]
+        ax.legend(handles=dox_handles, title="Dox (ng/mL)",
+                  loc='upper right', fontsize=6, title_fontsize=7)
 
     # --- Bottom left: Loadings heatmap ---
     ax_load = fig.add_subplot(gs_bottom[0])
@@ -558,7 +667,7 @@ def plot_pca_figure(df_scores, df_loadings, pca, experiments, valid_features,
     plt.close()
 
 
-def plot_pca_3d_views(df_scores, pca, experiments, output_dir, label, mode_tag):
+def plot_pca_pc3_projections_2d(df_scores, pca, experiments, output_dir, label, mode_tag):
     if 'PC3' not in df_scores.columns:
         print(f"  [{mode_tag}] Skipping PC3 figure (fewer than 3 PCs).")
         return
@@ -577,19 +686,17 @@ def plot_pca_3d_views(df_scores, pca, experiments, output_dir, label, mode_tag):
         exp_data = df_scores[df_scores['Experiment'] == exp]
         exp_dox = sorted(exp_data['Dox_Concentration'].unique())
         centroids = exp_data.groupby('Dox_Concentration')[['PC1', 'PC2', 'PC3']].mean().reindex(exp_dox)
-        replicates = sorted(exp_data['Replicate'].unique())
-        rep_markers = {rep: MARKER_STYLES[i % len(MARKER_STYLES)] for i, rep in enumerate(replicates)}
+        exp_marker = EXP_MARKERS.get(exp, 'o')
 
         # --- PC1 vs PC3 ---
         ax13 = fig.add_subplot(gs[ei, 0])
         for dox in exp_dox:
-            for rep in replicates:
-                subset = exp_data[(exp_data['Dox_Concentration'] == dox) & (exp_data['Replicate'] == rep)]
-                if subset.empty:
-                    continue
-                ax13.scatter(subset['PC1'], subset['PC3'],
-                             c=[dox_colors[dox]], marker=rep_markers[rep],
-                             s=70, alpha=0.45, edgecolors='white', linewidths=0.5)
+            subset = exp_data[exp_data['Dox_Concentration'] == dox]
+            if subset.empty:
+                continue
+            ax13.scatter(subset['PC1'], subset['PC3'],
+                         c=[dox_colors[dox]], marker=exp_marker,
+                         s=70, alpha=0.45, edgecolors='white', linewidths=0.5)
         ax13.plot(centroids['PC1'].values, centroids['PC3'].values, 'k-', linewidth=2.2, alpha=0.75)
         ax13.scatter(centroids['PC1'].values, centroids['PC3'].values,
                      c=[dox_colors[d] for d in exp_dox], marker='D', s=170,
@@ -601,13 +708,12 @@ def plot_pca_3d_views(df_scores, pca, experiments, output_dir, label, mode_tag):
         # --- PC2 vs PC3 ---
         ax23 = fig.add_subplot(gs[ei, 1])
         for dox in exp_dox:
-            for rep in replicates:
-                subset = exp_data[(exp_data['Dox_Concentration'] == dox) & (exp_data['Replicate'] == rep)]
-                if subset.empty:
-                    continue
-                ax23.scatter(subset['PC2'], subset['PC3'],
-                             c=[dox_colors[dox]], marker=rep_markers[rep],
-                             s=70, alpha=0.45, edgecolors='white', linewidths=0.5)
+            subset = exp_data[exp_data['Dox_Concentration'] == dox]
+            if subset.empty:
+                continue
+            ax23.scatter(subset['PC2'], subset['PC3'],
+                         c=[dox_colors[dox]], marker=exp_marker,
+                         s=70, alpha=0.45, edgecolors='white', linewidths=0.5)
         ax23.plot(centroids['PC2'].values, centroids['PC3'].values, 'k-', linewidth=2.2, alpha=0.75)
         ax23.scatter(centroids['PC2'].values, centroids['PC3'].values,
                      c=[dox_colors[d] for d in exp_dox], marker='D', s=170,
@@ -623,7 +729,7 @@ def plot_pca_3d_views(df_scores, pca, experiments, output_dir, label, mode_tag):
     plt.close()
 
 
-def plot_pca_trajectory_3d(df_scores, experiments, output_dir, label, mode_tag):
+def plot_pca_3d_scatter(df_scores, experiments, output_dir, label, mode_tag):
     if 'PC3' not in df_scores.columns:
         print(f"  [{mode_tag}] Skipping 3D trajectory figure (fewer than 3 PCs).")
         return
@@ -642,27 +748,25 @@ def plot_pca_trajectory_3d(df_scores, experiments, output_dir, label, mode_tag):
         exp_data = df_scores[df_scores['Experiment'] == exp]
         exp_dox = sorted(exp_data['Dox_Concentration'].unique())
         centroids = exp_data.groupby('Dox_Concentration')[['PC1', 'PC2', 'PC3']].mean().reindex(exp_dox)
-        replicates = sorted(exp_data['Replicate'].unique())
-        rep_markers = {rep: MARKER_STYLES[i % len(MARKER_STYLES)] for i, rep in enumerate(replicates)}
+        exp_marker = EXP_MARKERS.get(exp, 'o')
 
         ax3d = fig.add_subplot(gs[0, ei], projection='3d')
         for dox in exp_dox:
-            for rep in replicates:
-                subset = exp_data[(exp_data['Dox_Concentration'] == dox) & (exp_data['Replicate'] == rep)]
-                if subset.empty:
-                    continue
-                ax3d.scatter(subset['PC1'], subset['PC2'], subset['PC3'],
-                             c=[dox_colors[dox]], marker=rep_markers[rep],
-                             s=28, alpha=0.45, depthshade=True)
+            subset = exp_data[exp_data['Dox_Concentration'] == dox]
+            if subset.empty:
+                continue
+            ax3d.scatter(subset['PC1'], subset['PC3'], subset['PC2'],
+                         c=[dox_colors[dox]], marker=exp_marker,
+                         s=28, alpha=0.45, depthshade=True)
 
-        ax3d.plot(centroids['PC1'].values, centroids['PC2'].values, centroids['PC3'].values,
+        ax3d.plot(centroids['PC1'].values, centroids['PC3'].values, centroids['PC2'].values,
                   color='black', linewidth=2.3, alpha=0.85)
-        ax3d.scatter(centroids['PC1'].values, centroids['PC2'].values, centroids['PC3'].values,
+        ax3d.scatter(centroids['PC1'].values, centroids['PC3'].values, centroids['PC2'].values,
                      c=[dox_colors[d] for d in exp_dox], marker='D', s=90,
                      edgecolors='black', linewidths=1.2, depthshade=False)
         ax3d.set_xlabel("PC1")
-        ax3d.set_ylabel("PC2")
-        ax3d.set_zlabel("PC3")
+        ax3d.set_ylabel("PC3")
+        ax3d.set_zlabel("PC2")
         ax3d.set_title(f"{exp}: 3D Trajectory", fontweight='bold')
         ax3d.view_init(elev=22, azim=-58)
 
@@ -673,7 +777,7 @@ def plot_pca_trajectory_3d(df_scores, experiments, output_dir, label, mode_tag):
     plt.close()
 
 
-def plot_pca_figure_by_experiment(df_scores, df_loadings, pca, experiments, valid_features,
+def plot_pca_pc1_pc2_cross_experiment(df_scores, df_loadings, pca, experiments, valid_features,
                                   n_components, output_dir, label, mode_tag):
     if 'PC2' not in df_scores.columns:
         print(f"\n  [{mode_tag}] Skipping PC1-PC2 figure (fewer than 2 PCs).")
@@ -690,22 +794,19 @@ def plot_pca_figure_by_experiment(df_scores, df_loadings, pca, experiments, vali
     cmap_exp = plt.cm.tab10
     exp_colors = {exp: cmap_exp(i % 10) for i, exp in enumerate(exp_present)}
 
-    all_dox = sorted(df_scores['Dox_Concentration'].unique())
-    dox_markers = {dox: MARKER_STYLES[i % len(MARKER_STYLES)] for i, dox in enumerate(all_dox)}
-
     pc1_min, pc1_max = df_scores['PC1'].min(), df_scores['PC1'].max()
     pc2_min, pc2_max = df_scores['PC2'].min(), df_scores['PC2'].max()
     margin = 0.15 * max(pc1_max - pc1_min, pc2_max - pc2_min, 1)
 
     for exp in exp_present:
         exp_data = df_scores[df_scores['Experiment'] == exp]
-        for dox in all_dox:
-            subset = exp_data[exp_data['Dox_Concentration'] == dox]
-            if subset.empty:
-                continue
-            ax_top.scatter(subset['PC1'], subset['PC2'],
-                           c=[exp_colors[exp]], marker=dox_markers[dox],
-                           s=70, alpha=0.45, edgecolors='white', linewidths=0.5, zorder=3)
+        exp_marker = EXP_MARKERS.get(exp, 'o')
+        subset = exp_data
+        if subset.empty:
+            continue
+        ax_top.scatter(subset['PC1'], subset['PC2'],
+                       c=[exp_colors[exp]], marker=exp_marker,
+                       s=70, alpha=0.45, edgecolors='white', linewidths=0.5, zorder=3)
 
     centroids = df_scores.groupby('Experiment')[['PC1', 'PC2']].mean()
     centroids = centroids.reindex(exp_present)
@@ -728,17 +829,11 @@ def plot_pca_figure_by_experiment(df_scores, df_loadings, pca, experiments, vali
     ax_top.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)")
     ax_top.set_title("Cross-Experiment Trajectory (ordered by --experiment)", fontweight='bold')
 
-    exp_handles = [mlines.Line2D([], [], marker='o', color='w',
-                                 markerfacecolor=exp_colors[e], markersize=8, label=e)
+    exp_handles = [mlines.Line2D([], [], marker=EXP_MARKERS.get(e, 'o'), color='w',
+                                 markerfacecolor=exp_colors[e], markeredgecolor=exp_colors[e],
+                                 markersize=8, label=e)
                    for e in exp_present]
-    dox_handles = [mlines.Line2D([], [], marker=dox_markers[d], color='gray',
-                                 markerfacecolor='gray', markersize=7, linestyle='None', label=f'{d}')
-                   for d in all_dox]
-
-    leg1 = ax_top.legend(handles=exp_handles, title="Experiment", loc='upper right',
-                         fontsize=7, title_fontsize=8)
-    ax_top.add_artist(leg1)
-    ax_top.legend(handles=dox_handles, title="Dox (ng/mL)", loc='lower right',
+    ax_top.legend(handles=exp_handles, title="Experiment", loc='upper right',
                   fontsize=7, title_fontsize=8)
 
     ax_load = fig.add_subplot(gs_bottom[0])
@@ -775,7 +870,7 @@ def plot_pca_figure_by_experiment(df_scores, df_loadings, pca, experiments, vali
     plt.close()
 
 
-def plot_pca_3d_views_by_experiment(df_scores, pca, experiments, output_dir, label, mode_tag):
+def plot_pca_pc3_projections_2d_cross_experiment(df_scores, pca, experiments, output_dir, label, mode_tag):
     if 'PC3' not in df_scores.columns:
         print(f"  [{mode_tag}] Skipping PC3 figure (fewer than 3 PCs).")
         return
@@ -787,8 +882,6 @@ def plot_pca_3d_views_by_experiment(df_scores, pca, experiments, output_dir, lab
     exp_present = [e for e in experiments if e in set(df_scores['Experiment'].unique())]
     cmap_exp = plt.cm.tab10
     exp_colors = {exp: cmap_exp(i % 10) for i, exp in enumerate(exp_present)}
-    all_dox = sorted(df_scores['Dox_Concentration'].unique())
-    dox_markers = {dox: MARKER_STYLES[i % len(MARKER_STYLES)] for i, dox in enumerate(all_dox)}
 
     centroids = df_scores.groupby('Experiment')[['PC1', 'PC2', 'PC3']].mean().reindex(exp_present).dropna()
 
@@ -796,16 +889,15 @@ def plot_pca_3d_views_by_experiment(df_scores, pca, experiments, output_dir, lab
     ax23 = fig.add_subplot(gs[0, 1])
     for exp in exp_present:
         exp_data = df_scores[df_scores['Experiment'] == exp]
-        for dox in all_dox:
-            subset = exp_data[exp_data['Dox_Concentration'] == dox]
-            if subset.empty:
-                continue
-            ax13.scatter(subset['PC1'], subset['PC3'],
-                         c=[exp_colors[exp]], marker=dox_markers[dox],
-                         s=65, alpha=0.45, edgecolors='white', linewidths=0.5)
-            ax23.scatter(subset['PC2'], subset['PC3'],
-                         c=[exp_colors[exp]], marker=dox_markers[dox],
-                         s=65, alpha=0.45, edgecolors='white', linewidths=0.5)
+        exp_marker = EXP_MARKERS.get(exp, 'o')
+        if exp_data.empty:
+            continue
+        ax13.scatter(exp_data['PC1'], exp_data['PC3'],
+                     c=[exp_colors[exp]], marker=exp_marker,
+                     s=65, alpha=0.45, edgecolors='white', linewidths=0.5)
+        ax23.scatter(exp_data['PC2'], exp_data['PC3'],
+                     c=[exp_colors[exp]], marker=exp_marker,
+                     s=65, alpha=0.45, edgecolors='white', linewidths=0.5)
 
     if len(centroids) >= 2:
         ax13.plot(centroids['PC1'].values, centroids['PC3'].values, 'k-', linewidth=2.3, alpha=0.8)
@@ -832,7 +924,7 @@ def plot_pca_3d_views_by_experiment(df_scores, pca, experiments, output_dir, lab
     plt.close()
 
 
-def plot_pca_trajectory_3d_by_experiment(df_scores, experiments, output_dir, label, mode_tag):
+def plot_pca_3d_scatter_cross_experiment(df_scores, experiments, output_dir, label, mode_tag):
     if 'PC3' not in df_scores.columns:
         print(f"  [{mode_tag}] Skipping 3D trajectory figure (fewer than 3 PCs).")
         return
@@ -844,35 +936,32 @@ def plot_pca_trajectory_3d_by_experiment(df_scores, experiments, output_dir, lab
     exp_present = [e for e in experiments if e in set(df_scores['Experiment'].unique())]
     cmap_exp = plt.cm.tab10
     exp_colors = {exp: cmap_exp(i % 10) for i, exp in enumerate(exp_present)}
-    all_dox = sorted(df_scores['Dox_Concentration'].unique())
-    dox_markers = {dox: MARKER_STYLES[i % len(MARKER_STYLES)] for i, dox in enumerate(all_dox)}
 
     centroids = df_scores.groupby('Experiment')[['PC1', 'PC2', 'PC3']].mean().reindex(exp_present).dropna()
 
     for exp in exp_present:
         exp_data = df_scores[df_scores['Experiment'] == exp]
-        for dox in all_dox:
-            subset = exp_data[exp_data['Dox_Concentration'] == dox]
-            if subset.empty:
-                continue
-            ax3d.scatter(subset['PC1'], subset['PC2'], subset['PC3'],
-                         c=[exp_colors[exp]], marker=dox_markers[dox],
-                         s=26, alpha=0.45, depthshade=True)
+        exp_marker = EXP_MARKERS.get(exp, 'o')
+        if exp_data.empty:
+            continue
+        ax3d.scatter(exp_data['PC1'], exp_data['PC3'], exp_data['PC2'],
+                     c=[exp_colors[exp]], marker=exp_marker,
+                     s=26, alpha=0.45, depthshade=True)
 
     if len(centroids) >= 2:
-        ax3d.plot(centroids['PC1'].values, centroids['PC2'].values, centroids['PC3'].values,
+        ax3d.plot(centroids['PC1'].values, centroids['PC3'].values, centroids['PC2'].values,
                   color='black', linewidth=2.4, alpha=0.85)
-    ax3d.scatter(centroids['PC1'].values, centroids['PC2'].values, centroids['PC3'].values,
+    ax3d.scatter(centroids['PC1'].values, centroids['PC3'].values, centroids['PC2'].values,
                  c=[exp_colors[e] for e in centroids.index], marker='D', s=110,
                  edgecolors='black', linewidths=1.2, depthshade=False)
 
     for exp in centroids.index:
-        ax3d.text(centroids.loc[exp, 'PC1'], centroids.loc[exp, 'PC2'], centroids.loc[exp, 'PC3'],
+        ax3d.text(centroids.loc[exp, 'PC1'], centroids.loc[exp, 'PC3'], centroids.loc[exp, 'PC2'],
                   exp, fontsize=8)
 
     ax3d.set_xlabel("PC1")
-    ax3d.set_ylabel("PC2")
-    ax3d.set_zlabel("PC3")
+    ax3d.set_ylabel("PC3")
+    ax3d.set_zlabel("PC2")
     ax3d.set_title("3D Trajectory (grouped by experiment)", fontweight='bold')
     ax3d.view_init(elev=22, azim=-58)
 
@@ -1025,12 +1114,36 @@ def run_pca_mode(df_features, valid_features, meta_cols, experiments, output_dir
 
     pc_cols = [f'PC{i+1}' for i in range(n_components)]
     df_group_sep = compute_pca_group_separation(df_scores, pc_cols)
+    df_dox_step_dist = compute_consecutive_dox_distances(df_scores, experiments)
+    if not df_dox_step_dist.empty:
+        df_dox_step_dist_summary = (
+            df_dox_step_dist.groupby('Dox_Transition', as_index=False)
+            .agg(
+                Mean_Distance_PC1_PC2=('Distance_PC1_PC2', 'mean'),
+                SD_Distance_PC1_PC2=('Distance_PC1_PC2', 'std'),
+                Mean_Distance_PC1_PC2_PC3=('Distance_PC1_PC2_PC3', 'mean'),
+                SD_Distance_PC1_PC2_PC3=('Distance_PC1_PC2_PC3', 'std'),
+                N_Experiments=('Experiment', 'nunique')
+            )
+        )
+    else:
+        df_dox_step_dist_summary = pd.DataFrame(columns=[
+            'Dox_Transition',
+            'Mean_Distance_PC1_PC2', 'SD_Distance_PC1_PC2',
+            'Mean_Distance_PC1_PC2_PC3', 'SD_Distance_PC1_PC2_PC3',
+            'N_Experiments'
+        ])
 
     out_prefix = f"{label}_{mode_tag}"
     df_scores.to_csv(os.path.join(output_dir, f"{out_prefix}_pca_scores.csv"), index=False)
     df_loadings.to_csv(os.path.join(output_dir, f"{out_prefix}_pca_loadings.csv"))
     df_variance.to_csv(os.path.join(output_dir, f"{out_prefix}_pca_explained_variance.csv"), index=False)
     df_group_sep.to_csv(os.path.join(output_dir, f"{out_prefix}_pca_group_separation.csv"), index=False)
+    df_dox_step_dist.to_csv(os.path.join(output_dir, f"{out_prefix}_pca_consecutive_dox_distances.csv"), index=False)
+    df_dox_step_dist_summary.to_csv(
+        os.path.join(output_dir, f"{out_prefix}_pca_consecutive_dox_distances_summary.csv"),
+        index=False
+    )
     print(f"\n  PCA CSVs saved with prefix: {out_prefix}")
 
     print(f"\n  Explained variance:")
@@ -1073,17 +1186,18 @@ def run_pca_mode(df_features, valid_features, meta_cols, experiments, output_dir
                   f"p={row['KW_p_value']:.4f} {stars}  signal={row['Signal_Ratio']:.2f}")
 
     if trajectory_group_by == 'experiment' and len(experiments) > 1:
-        plot_pca_figure_by_experiment(df_scores, df_loadings, pca, experiments, valid_features,
+        plot_pca_pc1_pc2_cross_experiment(df_scores, df_loadings, pca, experiments, valid_features,
                                       n_components, output_dir, label, mode_tag)
-        plot_pca_3d_views_by_experiment(df_scores, pca, experiments, output_dir, label, mode_tag)
-        plot_pca_trajectory_3d_by_experiment(df_scores, experiments, output_dir, label, mode_tag)
+        plot_pca_pc3_projections_2d_cross_experiment(df_scores, pca, experiments, output_dir, label, mode_tag)
+        plot_pca_3d_scatter_cross_experiment(df_scores, experiments, output_dir, label, mode_tag)
     else:
         if trajectory_group_by == 'experiment' and len(experiments) <= 1:
             print(f"  [{mode_tag}] trajectory-group-by=experiment requires >=2 experiments; using dox grouping.")
-        plot_pca_figure(df_scores, df_loadings, pca, experiments, valid_features,
+        plot_pca_pc1_pc2_per_experiment(df_scores, df_loadings, pca, experiments, valid_features,
                         n_components, output_dir, label, mode_tag)
-        plot_pca_3d_views(df_scores, pca, experiments, output_dir, label, mode_tag)
-        plot_pca_trajectory_3d(df_scores, experiments, output_dir, label, mode_tag)
+        plot_pca_pc3_projections_2d(df_scores, pca, experiments, output_dir, label, mode_tag)
+        plot_pca_3d_scatter(df_scores, experiments, output_dir, label, mode_tag)
+    plot_consecutive_dox_distances(df_dox_step_dist, experiments, output_dir, label, mode_tag)
     plot_significance_figure(df_sig, experiments, output_dir, label, mode_tag)
 
 

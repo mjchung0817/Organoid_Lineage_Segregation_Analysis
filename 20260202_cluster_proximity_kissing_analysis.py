@@ -25,6 +25,11 @@ DATASET_MAP = {
 EPSILON = 30.0  # DBSCAN clustering threshold
 MIN_SAMPLES = 20  # DBSCAN min samples
 PROXIMITY_THRESHOLD = 30.0  # Distance threshold for "touching" (μm)
+# Uncertainty display for line plots:
+# use standard error bars (vertical) instead of shaded confidence bands.
+ERRORBAR_MODE = 'se'
+ERRORBAR_STYLE = 'bars'
+ERRORBAR_KWS = {'capsize': 4, 'elinewidth': 1.6}
 
 # ==============================================================================
 # HELPER: FILTER TO FIRST 3 ORGANOIDS PER REPLICATE PER CONDITION
@@ -71,7 +76,7 @@ def calculate_cluster_kissing(df):
     Calculate three touching metrics for Endo/Meso cluster interfaces:
     1) Minority clusters touching majority / total minority.
     2) Majority clusters touching minority / total majority.
-    3) Sum(A_endo_meso) / (dim(endo) * dim(meso)) where A is cluster-touch adjacency.
+    3) Sum(A_endo_meso) / (dim(endo) + dim(meso)) where A is cluster-touch adjacency.
     """
     target_col = next((c for c in df.columns if 'cell_type' in c.lower()), None)
     if not target_col:
@@ -142,7 +147,7 @@ def calculate_cluster_kissing(df):
             'Touching_Cluster_Pairs': 0,
             'Total_Endo_Clusters': n_endo,
             'Total_Meso_Clusters': n_meso,
-            'Total_Possible_Endo_Meso_Pairs': n_endo * n_meso
+            'Total_Endo_Meso_Dim_Sum': n_endo + n_meso
         }
 
     # Build bipartite touch adjacency between Endo clusters and Meso clusters.
@@ -171,8 +176,9 @@ def calculate_cluster_kissing(df):
     minority_touching_pct = (touching_minority / len(minority_clusters)) * 100.0 if len(minority_clusters) > 0 else 0.0
     majority_touching_pct = (touching_majority / len(majority_clusters)) * 100.0 if len(majority_clusters) > 0 else 0.0
 
-    possible_pairs = n_endo * n_meso
-    adjacency_density_pct = (touching_pairs / possible_pairs) * 100.0 if possible_pairs > 0 else 0.0
+    # Requested normalization: sum of lineage cluster dimensions (not product)
+    denominator_dim_sum = n_endo + n_meso
+    adjacency_density_pct = (touching_pairs / denominator_dim_sum) * 100.0 if denominator_dim_sum > 0 else 0.0
 
     return {
         'Majority_Lineage': majority,
@@ -188,7 +194,7 @@ def calculate_cluster_kissing(df):
         'Touching_Cluster_Pairs': touching_pairs,
         'Total_Endo_Clusters': n_endo,
         'Total_Meso_Clusters': n_meso,
-        'Total_Possible_Endo_Meso_Pairs': possible_pairs
+        'Total_Endo_Meso_Dim_Sum': denominator_dim_sum
     }
 
 # ==============================================================================
@@ -245,7 +251,7 @@ def run_proximity_analysis(base_path, exp_label, output_dir):
     panel1_cols = {
         'Minority_Touching_Pct': 'Minority in contact / total minority',
         'Majority_Touching_Pct': 'Majority in contact / total majority',
-        'Adjacency_Density_Pct': 'sum(A_endo_meso) / (dim(endo)*dim(meso))'
+        'Adjacency_Density_Pct': 'sum(A_endo_meso) / (dim(endo)+dim(meso))'
     }
     df_panel1 = df_results.melt(
         id_vars=['Dox_Concentration', 'Replicate', 'File', 'Minority_Lineage', 'Majority_Lineage'],
@@ -257,7 +263,11 @@ def run_proximity_analysis(base_path, exp_label, output_dir):
 
     sns.lineplot(data=df_panel1, x='Dox_Concentration', y='Touching_Percentage',
                  hue='Method',
-                 marker='o', errorbar=('ci', 95), linewidth=2.5, ax=ax1)
+                 marker='o',
+                 errorbar=ERRORBAR_MODE,
+                 err_style=ERRORBAR_STYLE,
+                 err_kws=ERRORBAR_KWS,
+                 linewidth=2.5, ax=ax1)
     ax1.set_title("Cluster Interface Touching %\n(Three Definitions)",
                   fontweight='bold')
     ax1.set_xscale('symlog', linthresh=10)
@@ -294,7 +304,11 @@ def run_proximity_analysis(base_path, exp_label, output_dir):
     if not df_summary.empty:
         sns.lineplot(data=df_summary, x='Dox_Concentration', y='Minority_Frequency',
                      hue='Lineage', palette=lineage_palette,
-                     marker='s', linewidth=2.5, ax=ax2)
+                     marker='s',
+                     errorbar=ERRORBAR_MODE,
+                     err_style=ERRORBAR_STYLE,
+                     err_kws=ERRORBAR_KWS,
+                     linewidth=2.5, ax=ax2)
         ax2.set_title("Cluster Count Minority: % of Organoids Where\nLineage Has Fewer Clusters",
                       fontweight='bold')
         ax2.set_xscale('symlog', linthresh=10)
