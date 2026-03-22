@@ -41,19 +41,38 @@ MARKER_STYLES = ['o', 's', '^', 'D', 'v', 'P', 'X']
 EXP_MARKERS = {
     'exp1': 'o',
     'exp2_low_cn': '^',
-    'exp2_high_cn': 'x',
+    'exp2_high_cn': 'd',
     'exp3': 'D',
 }
 
 DISPLAY_NAMES = {
     'NMS_Endo': 'NMS (Endo)', 'NMS_Meso': 'NMS (Meso)',
-    'Total_Cells': 'Total Cells (max-norm)', 'Pct_Endo': 'Endo Fraction', 'Pct_Meso': 'Meso Fraction',
+    'Total_Cells': 'Total Cells', 'Pct_Endo': 'Endo Fraction', 'Pct_Meso': 'Meso Fraction',
     'Radial_Mean_Endo': 'Radial Mean (Endo)', 'Radial_Std_Endo': 'Radial Std (Endo)',
     'Radial_Mean_Meso': 'Radial Mean (Meso)', 'Radial_Std_Meso': 'Radial Std (Meso)',
     'Cluster_Count_Endo': 'Cluster Count (Endo)', 'Cluster_Count_Meso': 'Cluster Count (Meso)',
     'Cluster_Size_Endo': 'Cluster Size (Endo)', 'Cluster_Size_Meso': 'Cluster Size (Meso)',
     'Intra_Distance_Endo': 'Intra Dist (Endo)', 'Intra_Distance_Meso': 'Intra Dist (Meso)',
     'Inter_Distance': 'Inter Dist (E-M)', 'Adjacency_Pct': 'Adjacency %'
+}
+
+LOADINGS_GROUPS = [
+    ('Cell-level Features', ['Total_Cells', 'Inter_Distance', 'Adjacency_Pct']),
+    ('Meso Features', ['Pct_Meso', 'Radial_Mean_Meso', 'Radial_Std_Meso',
+                       'NMS_Meso', 'Cluster_Count_Meso', 'Cluster_Size_Meso',
+                       'Intra_Distance_Meso']),
+    ('Endo Features', ['Pct_Endo', 'Radial_Mean_Endo', 'Radial_Std_Endo',
+                       'NMS_Endo', 'Cluster_Count_Endo', 'Cluster_Size_Endo',
+                       'Intra_Distance_Endo']),
+]
+
+LINE_METRIC_GROUPS = {
+    'nms': [('NMS_Endo', 'Endo'), ('NMS_Meso', 'Meso')],
+    'cluster_size': [('Cluster_Size_Endo', 'Endo'), ('Cluster_Size_Meso', 'Meso')],
+    'cluster_count': [('Cluster_Count_Endo', 'Endo'), ('Cluster_Count_Meso', 'Meso')],
+    'intra_distance': [('Intra_Distance_Endo', 'Endo'), ('Intra_Distance_Meso', 'Meso')],
+    'inter_distance': [('Inter_Distance', 'All')],
+    'adjacency': [('Adjacency_Pct', 'All')],
 }
 
 # ==============================================================================
@@ -548,11 +567,329 @@ def build_pca_fit_matrix(df_pca, valid_features, pca_fit_basis):
 
     return df_fit[valid_features].values, len(df_fit)
 
+
+def get_feature_order_for_loadings(valid_features):
+    ordered = []
+    seen = set()
+    for _, feats in LOADINGS_GROUPS:
+        for feat in feats:
+            if feat in valid_features and feat not in seen:
+                ordered.append(feat)
+                seen.add(feat)
+    for feat in valid_features:
+        if feat not in seen:
+            ordered.append(feat)
+    return ordered
+
+
+def get_group_boundaries(feature_order):
+    boundaries = []
+    starts = []
+    idx = 0
+    for group_name, feats in LOADINGS_GROUPS:
+        group_feats = [f for f in feature_order if f in feats]
+        if not group_feats:
+            continue
+        start = idx
+        end = idx + len(group_feats) - 1
+        starts.append((group_name, start, end))
+        boundaries.append(end + 1)
+        idx = end + 1
+    return starts, boundaries[:-1]
+
+
+def compute_global_axes_limits(df_scores):
+    limits = {}
+    for pc in ['PC1', 'PC2', 'PC3']:
+        if pc not in df_scores.columns:
+            continue
+        vmin = float(df_scores[pc].min())
+        vmax = float(df_scores[pc].max())
+        span = max(vmax - vmin, 1e-6)
+        pad = 0.12 * span
+        limits[pc] = (vmin - pad, vmax + pad)
+    return limits
+
+
+def plot_pca_scree_only(pca, n_components, output_dir, label, mode_tag):
+    sns.set_theme(style="whitegrid", context="talk")
+    fig, ax = plt.subplots(figsize=(6.5, 5.5))
+    pc_labels = [f'PC{i+1}' for i in range(n_components)]
+    ax.bar(pc_labels, pca.explained_variance_ratio_ * 100,
+           color='steelblue', alpha=0.8, edgecolor='navy')
+    cumulative = np.cumsum(pca.explained_variance_ratio_) * 100
+    ax.plot(pc_labels, cumulative, 'ro-', linewidth=2, markersize=7)
+    ax.set_ylabel("Variance Explained (%)")
+    ax.set_title("Scree Plot", fontweight='bold')
+    ax.set_ylim(0, 105)
+    for i, cum in enumerate(cumulative):
+        ax.annotate(f'{cum:.0f}%', (i, cum), textcoords="offset points",
+                    xytext=(0, 8), ha='center', fontsize=8, color='red', fontweight='bold')
+    plt.tight_layout()
+    output_file = os.path.join(output_dir, f"{label}_{mode_tag}_PCA_Scree_only.png")
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    print(f"  Scree-only figure saved: {output_file}")
+    plt.close(fig)
+
+
+def plot_pca_loadings_only(df_loadings, valid_features, n_components, output_dir, label, mode_tag):
+    sns.set_theme(style="whitegrid", context="talk")
+    n_show = min(4, n_components)
+    show_cols = [f'PC{i+1}' for i in range(n_show)]
+    ordered_features = get_feature_order_for_loadings(valid_features)
+    loadings_show = df_loadings.loc[ordered_features, show_cols].copy()
+    loadings_display = loadings_show.rename(index=DISPLAY_NAMES)
+
+    fig_h = max(6.5, 0.45 * len(loadings_display) + 2.0)
+    fig, ax = plt.subplots(figsize=(6.8, fig_h))
+    sns.heatmap(loadings_display, annot=False, cmap='RdBu_r', center=0,
+                ax=ax, cbar_kws={'shrink': 0.8, 'label': 'Loading'},
+                linewidths=0.5, linecolor='white')
+    ax.set_title("PC Loadings", fontweight='bold')
+    ax.set_ylabel("")
+
+    _, boundaries = get_group_boundaries(ordered_features)
+    for b in boundaries:
+        ax.hlines(b, *ax.get_xlim(), colors='black', linewidth=1.4)
+
+    output_file = os.path.join(output_dir, f"{label}_{mode_tag}_PCA_Loadings_only.png")
+    plt.tight_layout()
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    print(f"  Loadings-only figure saved: {output_file}")
+    plt.close(fig)
+
+
+def _plot_experiment_2d(ax, exp_data, exp, dox_colors, pca, axes_limits):
+    exp_dox = sorted(exp_data['Dox_Concentration'].unique())
+    exp_marker = EXP_MARKERS.get(exp, 'o')
+    for dox in exp_dox:
+        subset = exp_data[exp_data['Dox_Concentration'] == dox]
+        if subset.empty:
+            continue
+        ax.scatter(subset['PC1'], subset['PC2'],
+                   c=[dox_colors[dox]], marker=exp_marker,
+                   s=85, alpha=0.5, edgecolors='white', linewidths=0.5, zorder=3)
+    centroids = exp_data.groupby('Dox_Concentration')[['PC1', 'PC2']].mean().reindex(exp_dox)
+    ax.plot(centroids['PC1'].values, centroids['PC2'].values, 'k-', linewidth=2.4, alpha=0.75, zorder=5)
+    ax.scatter(centroids['PC1'].values, centroids['PC2'].values,
+               c=[dox_colors[d] for d in exp_dox], s=210, marker='D',
+               edgecolors='black', linewidths=1.8, zorder=6)
+    if 'PC1' in axes_limits:
+        ax.set_xlim(*axes_limits['PC1'])
+    if 'PC2' in axes_limits:
+        ax.set_ylim(*axes_limits['PC2'])
+    ax.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f}%)")
+    ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)")
+    ax.set_title(f"{exp}: PC1-PC2", fontweight='bold')
+
+
+def _plot_experiment_3d(ax, exp_data, exp, dox_colors, axes_limits):
+    exp_dox = sorted(exp_data['Dox_Concentration'].unique())
+    exp_marker = EXP_MARKERS.get(exp, 'o')
+    for dox in exp_dox:
+        subset = exp_data[exp_data['Dox_Concentration'] == dox]
+        if subset.empty:
+            continue
+        ax.scatter(subset['PC1'], subset['PC3'], subset['PC2'],
+                   c=[dox_colors[dox]], marker=exp_marker, s=30, alpha=0.45, depthshade=True)
+    centroids = exp_data.groupby('Dox_Concentration')[['PC1', 'PC2', 'PC3']].mean().reindex(exp_dox)
+    ax.plot(centroids['PC1'].values, centroids['PC3'].values, centroids['PC2'].values,
+            color='black', linewidth=2.2, alpha=0.85)
+    ax.scatter(centroids['PC1'].values, centroids['PC3'].values, centroids['PC2'].values,
+               c=[dox_colors[d] for d in exp_dox], marker='D', s=95,
+               edgecolors='black', linewidths=1.2, depthshade=False)
+    if 'PC1' in axes_limits:
+        ax.set_xlim(*axes_limits['PC1'])
+    if 'PC3' in axes_limits:
+        ax.set_ylim(*axes_limits['PC3'])
+    if 'PC2' in axes_limits:
+        ax.set_zlim(*axes_limits['PC2'])
+    ax.set_xlabel("PC1")
+    ax.set_ylabel("PC3")
+    ax.set_zlabel("PC2")
+    ax.set_title(f"{exp}: 3D Trajectory", fontweight='bold')
+    ax.view_init(elev=22, azim=-58)
+
+
+def plot_pca_2d_per_experiment_split(df_scores, pca, experiments, output_dir, label, mode_tag, axes_limits):
+    if 'PC2' not in df_scores.columns:
+        return
+    all_dox = sorted(df_scores['Dox_Concentration'].unique())
+    cmap = plt.cm.plasma
+    norm = plt.Normalize(vmin=0, vmax=max(len(all_dox) - 1, 1))
+    dox_colors = {d: cmap(norm(i)) for i, d in enumerate(all_dox)}
+    sns.set_theme(style="whitegrid", context="talk")
+    for exp in experiments:
+        exp_data = df_scores[df_scores['Experiment'] == exp]
+        if exp_data.empty:
+            continue
+        fig, ax = plt.subplots(figsize=(7.2, 6.3))
+        _plot_experiment_2d(ax, exp_data, exp, dox_colors, pca, axes_limits)
+        plt.tight_layout()
+        output_file = os.path.join(output_dir, f"{label}_{mode_tag}_PCA_2D_{exp}.png")
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        print(f"  2D per-experiment figure saved: {output_file}")
+        plt.close(fig)
+
+
+def plot_pca_3d_per_experiment_split(df_scores, experiments, output_dir, label, mode_tag, axes_limits):
+    if 'PC3' not in df_scores.columns:
+        return
+    all_dox = sorted(df_scores['Dox_Concentration'].unique())
+    cmap = plt.cm.plasma
+    norm = plt.Normalize(vmin=0, vmax=max(len(all_dox) - 1, 1))
+    dox_colors = {d: cmap(norm(i)) for i, d in enumerate(all_dox)}
+    sns.set_theme(style="whitegrid", context="talk")
+    for exp in experiments:
+        exp_data = df_scores[df_scores['Experiment'] == exp]
+        if exp_data.empty:
+            continue
+        fig = plt.figure(figsize=(7.2, 6.3))
+        ax = fig.add_subplot(111, projection='3d')
+        _plot_experiment_3d(ax, exp_data, exp, dox_colors, axes_limits)
+        plt.tight_layout()
+        output_file = os.path.join(output_dir, f"{label}_{mode_tag}_PCA_3D_{exp}.png")
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        print(f"  3D per-experiment figure saved: {output_file}")
+        plt.close(fig)
+
+
+def plot_exp2_with_exp1_overlay(df_scores, pca, output_dir, label, mode_tag, axes_limits):
+    if 'exp1' not in set(df_scores['Experiment'].unique()):
+        return
+    targets = [e for e in ['exp2_high_cn', 'exp2_low_cn'] if e in set(df_scores['Experiment'].unique())]
+    if not targets:
+        return
+
+    all_dox = sorted(df_scores['Dox_Concentration'].unique())
+    cmap = plt.cm.plasma
+    norm = plt.Normalize(vmin=0, vmax=max(len(all_dox) - 1, 1))
+    dox_colors = {d: cmap(norm(i)) for i, d in enumerate(all_dox)}
+    exp1_data = df_scores[df_scores['Experiment'] == 'exp1']
+
+    sns.set_theme(style="whitegrid", context="talk")
+    for target in targets:
+        tgt_data = df_scores[df_scores['Experiment'] == target]
+        if tgt_data.empty:
+            continue
+
+        # 2D overlay
+        fig2, ax2 = plt.subplots(figsize=(7.3, 6.3))
+        ax2.scatter(exp1_data['PC1'], exp1_data['PC2'],
+                    c='gray', marker=EXP_MARKERS['exp1'], s=55, alpha=0.20,
+                    edgecolors='none', zorder=1, label='exp1 overlay')
+        _plot_experiment_2d(ax2, tgt_data, target, dox_colors, pca, axes_limits)
+        plt.tight_layout()
+        out2 = os.path.join(output_dir, f"{label}_{mode_tag}_PCA_2D_{target}_with_exp1_overlay.png")
+        plt.savefig(out2, dpi=300, bbox_inches='tight')
+        print(f"  Overlay 2D figure saved: {out2}")
+        plt.close(fig2)
+
+        # 3D overlay
+        if 'PC3' in df_scores.columns:
+            fig3 = plt.figure(figsize=(7.3, 6.3))
+            ax3 = fig3.add_subplot(111, projection='3d')
+            ax3.scatter(exp1_data['PC1'], exp1_data['PC3'], exp1_data['PC2'],
+                        c='gray', marker=EXP_MARKERS['exp1'], s=20, alpha=0.20,
+                        depthshade=True)
+            _plot_experiment_3d(ax3, tgt_data, target, dox_colors, axes_limits)
+            plt.tight_layout()
+            out3 = os.path.join(output_dir, f"{label}_{mode_tag}_PCA_3D_{target}_with_exp1_overlay.png")
+            plt.savefig(out3, dpi=300, bbox_inches='tight')
+            print(f"  Overlay 3D figure saved: {out3}")
+            plt.close(fig3)
+
+
+def plot_line_metrics_across_dox(df_mode_imp, experiments, output_dir, label, mode_tag, line_metric_groups):
+    metric_keys = line_metric_groups
+    if not metric_keys:
+        return
+
+    exp_present = [e for e in experiments if e in set(df_mode_imp['Experiment'].unique())]
+    if len(exp_present) < 2:
+        return
+
+    cmap_exp = plt.cm.tab10
+    exp_colors = {exp: cmap_exp(i % 10) for i, exp in enumerate(exp_present)}
+
+    pairwise_rows = []
+    for mkey in metric_keys:
+        pairs = LINE_METRIC_GROUPS.get(mkey, [])
+        for feat, lineage in pairs:
+            if feat not in df_mode_imp.columns:
+                continue
+
+            plot_df = df_mode_imp[['Experiment', 'Dox_Concentration', feat]].copy()
+            plot_df = plot_df.dropna(subset=[feat])
+            if plot_df.empty:
+                continue
+
+            agg = (plot_df.groupby(['Experiment', 'Dox_Concentration'])[feat]
+                   .agg(mean='mean', sd='std', n='count')
+                   .reset_index())
+            agg['sem'] = agg['sd'] / np.sqrt(agg['n'].clip(lower=1))
+
+            # Pairwise experiment differences at each dox (saved to CSV).
+            dox_vals = sorted(agg['Dox_Concentration'].unique())
+            for dox in dox_vals:
+                at_dox = agg[agg['Dox_Concentration'] == dox]
+                for i in range(len(exp_present)):
+                    for j in range(i + 1, len(exp_present)):
+                        ea, eb = exp_present[i], exp_present[j]
+                        va = at_dox.loc[at_dox['Experiment'] == ea, 'mean']
+                        vb = at_dox.loc[at_dox['Experiment'] == eb, 'mean']
+                        if va.empty or vb.empty:
+                            continue
+                        pairwise_rows.append({
+                            'Metric_Group': mkey,
+                            'Feature': feat,
+                            'Lineage': lineage,
+                            'Dox_Concentration': dox,
+                            'Experiment_A': ea,
+                            'Experiment_B': eb,
+                            'Mean_Diff_A_minus_B': float(va.iloc[0] - vb.iloc[0]),
+                        })
+
+            sns.set_theme(style="whitegrid", context="talk")
+            fig, ax = plt.subplots(figsize=(8.0, 5.6))
+            for exp in exp_present:
+                exp_agg = agg[agg['Experiment'] == exp].sort_values('Dox_Concentration')
+                if exp_agg.empty:
+                    continue
+                x = exp_agg['Dox_Concentration'].values
+                y = exp_agg['mean'].values
+                se = exp_agg['sem'].fillna(0).values
+                marker = EXP_MARKERS.get(exp, 'o')
+                ax.plot(x, y, marker=marker, markersize=6.8, linewidth=2.0,
+                        color=exp_colors[exp], label=exp)
+                ax.fill_between(x, y - se, y + se, color=exp_colors[exp], alpha=0.14)
+
+            ylab = DISPLAY_NAMES.get(feat, feat)
+            ax.set_title(f"{ylab} across dox ({lineage}) [{mode_tag}]", fontweight='bold')
+            ax.set_xlabel("Dox concentration (ng/mL)")
+            ax.set_ylabel(ylab)
+            ax.legend(title="Experiment", loc='best', fontsize=9, title_fontsize=10)
+            ax.set_xticks(sorted(agg['Dox_Concentration'].unique()))
+            plt.tight_layout()
+            out_png = os.path.join(output_dir, f"{label}_{mode_tag}_Line_{feat}.png")
+            plt.savefig(out_png, dpi=300, bbox_inches='tight')
+            print(f"  Line metric plot saved: {out_png}")
+            plt.close(fig)
+
+            out_csv = os.path.join(output_dir, f"{label}_{mode_tag}_Line_{feat}_summary.csv")
+            agg.to_csv(out_csv, index=False)
+
+    if pairwise_rows:
+        df_pair = pd.DataFrame(pairwise_rows)
+        out_pair = os.path.join(output_dir, f"{label}_{mode_tag}_LineMetrics_pairwise_mean_diffs.csv")
+        df_pair.to_csv(out_pair, index=False)
+        print(f"  Pairwise line-metric mean differences saved: {out_pair}")
+
 # ==============================================================================
 # VISUALIZATION: MAIN PCA FIGURE
 # ==============================================================================
 def plot_pca_pc1_pc2_per_experiment(df_scores, df_loadings, pca, experiments, valid_features,
-                    n_components, output_dir, label, mode_tag):
+                    n_components, output_dir, label, mode_tag, axes_limits=None):
     if 'PC2' not in df_scores.columns:
         print(f"\n  [{mode_tag}] Skipping PC1-PC2 figure (fewer than 2 PCs).")
         return
@@ -575,9 +912,8 @@ def plot_pca_pc1_pc2_per_experiment(df_scores, df_loadings, pca, experiments, va
     dox_colors = {dox: cmap(norm(i)) for i, dox in enumerate(all_dox)}
 
     # Shared axis limits across experiment panels
-    pc1_min, pc1_max = df_scores['PC1'].min(), df_scores['PC1'].max()
-    pc2_min, pc2_max = df_scores['PC2'].min(), df_scores['PC2'].max()
-    margin = 0.15 * max(pc1_max - pc1_min, pc2_max - pc2_min, 1)
+    if axes_limits is None:
+        axes_limits = compute_global_axes_limits(df_scores)
 
     # --- Top row: PCA scatter per experiment ---
     for ei, exp in enumerate(experiments):
@@ -613,8 +949,10 @@ def plot_pca_pc1_pc2_per_experiment(df_scores, df_loadings, pca, experiments, va
                             textcoords="offset points", xytext=(10, 8),
                             fontsize=8, fontweight='bold')
 
-        ax.set_xlim(pc1_min - margin, pc1_max + margin)
-        ax.set_ylim(pc2_min - margin, pc2_max + margin)
+        if 'PC1' in axes_limits:
+            ax.set_xlim(*axes_limits['PC1'])
+        if 'PC2' in axes_limits:
+            ax.set_ylim(*axes_limits['PC2'])
         ax.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f}%)")
         ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)")
         ax.set_title(f"{exp}", fontweight='bold')
@@ -630,14 +968,19 @@ def plot_pca_pc1_pc2_per_experiment(df_scores, df_loadings, pca, experiments, va
     # --- Bottom left: Loadings heatmap ---
     ax_load = fig.add_subplot(gs_bottom[0])
     n_show = min(4, n_components)
-    loadings_show = df_loadings.iloc[:, :n_show]
+    show_cols = [f'PC{i+1}' for i in range(n_show)]
+    ordered_features = get_feature_order_for_loadings(valid_features)
+    loadings_show = df_loadings.loc[ordered_features, show_cols]
     loadings_display = loadings_show.rename(index=DISPLAY_NAMES)
 
-    sns.heatmap(loadings_display, annot=True, fmt='.2f', cmap='RdBu_r', center=0,
+    sns.heatmap(loadings_display, annot=False, cmap='RdBu_r', center=0,
                 ax=ax_load, cbar_kws={'shrink': 0.8, 'label': 'Loading'},
                 linewidths=0.5, linecolor='white')
     ax_load.set_title("PC Loadings", fontweight='bold')
     ax_load.set_ylabel("")
+    _, boundaries = get_group_boundaries(ordered_features)
+    for b in boundaries:
+        ax_load.hlines(b, *ax_load.get_xlim(), colors='black', linewidth=1.4)
 
     # --- Bottom right: Scree plot ---
     ax_scree = fig.add_subplot(gs_bottom[1])
@@ -667,10 +1010,12 @@ def plot_pca_pc1_pc2_per_experiment(df_scores, df_loadings, pca, experiments, va
     plt.close()
 
 
-def plot_pca_pc3_projections_2d(df_scores, pca, experiments, output_dir, label, mode_tag):
+def plot_pca_pc3_projections_2d(df_scores, pca, experiments, output_dir, label, mode_tag, axes_limits=None):
     if 'PC3' not in df_scores.columns:
         print(f"  [{mode_tag}] Skipping PC3 figure (fewer than 3 PCs).")
         return
+    if axes_limits is None:
+        axes_limits = compute_global_axes_limits(df_scores)
 
     sns.set_theme(style="whitegrid", context="talk")
     n_exp = len(experiments)
@@ -704,6 +1049,10 @@ def plot_pca_pc3_projections_2d(df_scores, pca, experiments, output_dir, label, 
         ax13.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f}%)")
         ax13.set_ylabel(f"PC3 ({pca.explained_variance_ratio_[2]*100:.1f}%)")
         ax13.set_title(f"{exp}: PC1-PC3", fontweight='bold')
+        if 'PC1' in axes_limits:
+            ax13.set_xlim(*axes_limits['PC1'])
+        if 'PC3' in axes_limits:
+            ax13.set_ylim(*axes_limits['PC3'])
 
         # --- PC2 vs PC3 ---
         ax23 = fig.add_subplot(gs[ei, 1])
@@ -721,6 +1070,10 @@ def plot_pca_pc3_projections_2d(df_scores, pca, experiments, output_dir, label, 
         ax23.set_xlabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)")
         ax23.set_ylabel(f"PC3 ({pca.explained_variance_ratio_[2]*100:.1f}%)")
         ax23.set_title(f"{exp}: PC2-PC3", fontweight='bold')
+        if 'PC2' in axes_limits:
+            ax23.set_xlim(*axes_limits['PC2'])
+        if 'PC3' in axes_limits:
+            ax23.set_ylim(*axes_limits['PC3'])
 
     plt.suptitle(f"PC3 Projection Views [{mode_tag}]", fontsize=18, fontweight='bold')
     output_file = os.path.join(output_dir, f"{label}_{mode_tag}_Spatial_State_Trajectory_PCA_PC3_2D.png")
@@ -729,10 +1082,12 @@ def plot_pca_pc3_projections_2d(df_scores, pca, experiments, output_dir, label, 
     plt.close()
 
 
-def plot_pca_3d_scatter(df_scores, experiments, output_dir, label, mode_tag):
+def plot_pca_3d_scatter(df_scores, experiments, output_dir, label, mode_tag, axes_limits=None):
     if 'PC3' not in df_scores.columns:
         print(f"  [{mode_tag}] Skipping 3D trajectory figure (fewer than 3 PCs).")
         return
+    if axes_limits is None:
+        axes_limits = compute_global_axes_limits(df_scores)
 
     sns.set_theme(style="whitegrid", context="talk")
     n_exp = len(experiments)
@@ -769,6 +1124,12 @@ def plot_pca_3d_scatter(df_scores, experiments, output_dir, label, mode_tag):
         ax3d.set_zlabel("PC2")
         ax3d.set_title(f"{exp}: 3D Trajectory", fontweight='bold')
         ax3d.view_init(elev=22, azim=-58)
+        if 'PC1' in axes_limits:
+            ax3d.set_xlim(*axes_limits['PC1'])
+        if 'PC3' in axes_limits:
+            ax3d.set_ylim(*axes_limits['PC3'])
+        if 'PC2' in axes_limits:
+            ax3d.set_zlim(*axes_limits['PC2'])
 
     plt.suptitle(f"3D Trajectory Only [{mode_tag}]", fontsize=18, fontweight='bold')
     output_file = os.path.join(output_dir, f"{label}_{mode_tag}_Spatial_State_Trajectory_PCA_3D_only.png")
@@ -778,7 +1139,7 @@ def plot_pca_3d_scatter(df_scores, experiments, output_dir, label, mode_tag):
 
 
 def plot_pca_pc1_pc2_cross_experiment(df_scores, df_loadings, pca, experiments, valid_features,
-                                  n_components, output_dir, label, mode_tag):
+                                  n_components, output_dir, label, mode_tag, axes_limits=None):
     if 'PC2' not in df_scores.columns:
         print(f"\n  [{mode_tag}] Skipping PC1-PC2 figure (fewer than 2 PCs).")
         return
@@ -794,9 +1155,8 @@ def plot_pca_pc1_pc2_cross_experiment(df_scores, df_loadings, pca, experiments, 
     cmap_exp = plt.cm.tab10
     exp_colors = {exp: cmap_exp(i % 10) for i, exp in enumerate(exp_present)}
 
-    pc1_min, pc1_max = df_scores['PC1'].min(), df_scores['PC1'].max()
-    pc2_min, pc2_max = df_scores['PC2'].min(), df_scores['PC2'].max()
-    margin = 0.15 * max(pc1_max - pc1_min, pc2_max - pc2_min, 1)
+    if axes_limits is None:
+        axes_limits = compute_global_axes_limits(df_scores)
 
     for exp in exp_present:
         exp_data = df_scores[df_scores['Experiment'] == exp]
@@ -823,8 +1183,10 @@ def plot_pca_pc1_pc2_cross_experiment(df_scores, df_loadings, pca, experiments, 
         ax_top.annotate(exp, (centroids.loc[exp, 'PC1'], centroids.loc[exp, 'PC2']),
                         textcoords="offset points", xytext=(10, 8), fontsize=9, fontweight='bold')
 
-    ax_top.set_xlim(pc1_min - margin, pc1_max + margin)
-    ax_top.set_ylim(pc2_min - margin, pc2_max + margin)
+    if 'PC1' in axes_limits:
+        ax_top.set_xlim(*axes_limits['PC1'])
+    if 'PC2' in axes_limits:
+        ax_top.set_ylim(*axes_limits['PC2'])
     ax_top.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f}%)")
     ax_top.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)")
     ax_top.set_title("Cross-Experiment Trajectory (ordered by --experiment)", fontweight='bold')
@@ -838,13 +1200,18 @@ def plot_pca_pc1_pc2_cross_experiment(df_scores, df_loadings, pca, experiments, 
 
     ax_load = fig.add_subplot(gs_bottom[0])
     n_show = min(4, n_components)
-    loadings_show = df_loadings.iloc[:, :n_show]
+    show_cols = [f'PC{i+1}' for i in range(n_show)]
+    ordered_features = get_feature_order_for_loadings(valid_features)
+    loadings_show = df_loadings.loc[ordered_features, show_cols]
     loadings_display = loadings_show.rename(index=DISPLAY_NAMES)
-    sns.heatmap(loadings_display, annot=True, fmt='.2f', cmap='RdBu_r', center=0,
+    sns.heatmap(loadings_display, annot=False, cmap='RdBu_r', center=0,
                 ax=ax_load, cbar_kws={'shrink': 0.8, 'label': 'Loading'},
                 linewidths=0.5, linecolor='white')
     ax_load.set_title("PC Loadings", fontweight='bold')
     ax_load.set_ylabel("")
+    _, boundaries = get_group_boundaries(ordered_features)
+    for b in boundaries:
+        ax_load.hlines(b, *ax_load.get_xlim(), colors='black', linewidth=1.4)
 
     ax_scree = fig.add_subplot(gs_bottom[1])
     pc_labels = [f'PC{i+1}' for i in range(n_components)]
@@ -870,10 +1237,12 @@ def plot_pca_pc1_pc2_cross_experiment(df_scores, df_loadings, pca, experiments, 
     plt.close()
 
 
-def plot_pca_pc3_projections_2d_cross_experiment(df_scores, pca, experiments, output_dir, label, mode_tag):
+def plot_pca_pc3_projections_2d_cross_experiment(df_scores, pca, experiments, output_dir, label, mode_tag, axes_limits=None):
     if 'PC3' not in df_scores.columns:
         print(f"  [{mode_tag}] Skipping PC3 figure (fewer than 3 PCs).")
         return
+    if axes_limits is None:
+        axes_limits = compute_global_axes_limits(df_scores)
 
     sns.set_theme(style="whitegrid", context="talk")
     fig = plt.figure(figsize=(14, 7))
@@ -912,9 +1281,17 @@ def plot_pca_pc3_projections_2d_cross_experiment(df_scores, pca, experiments, ou
     ax13.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f}%)")
     ax13.set_ylabel(f"PC3 ({pca.explained_variance_ratio_[2]*100:.1f}%)")
     ax13.set_title("PC1-PC3 (by experiment)", fontweight='bold')
+    if 'PC1' in axes_limits:
+        ax13.set_xlim(*axes_limits['PC1'])
+    if 'PC3' in axes_limits:
+        ax13.set_ylim(*axes_limits['PC3'])
     ax23.set_xlabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)")
     ax23.set_ylabel(f"PC3 ({pca.explained_variance_ratio_[2]*100:.1f}%)")
     ax23.set_title("PC2-PC3 (by experiment)", fontweight='bold')
+    if 'PC2' in axes_limits:
+        ax23.set_xlim(*axes_limits['PC2'])
+    if 'PC3' in axes_limits:
+        ax23.set_ylim(*axes_limits['PC3'])
 
     plt.suptitle(f"PC3 Projection Views — Grouped by Experiment [{mode_tag}]",
                  fontsize=18, fontweight='bold')
@@ -924,10 +1301,12 @@ def plot_pca_pc3_projections_2d_cross_experiment(df_scores, pca, experiments, ou
     plt.close()
 
 
-def plot_pca_3d_scatter_cross_experiment(df_scores, experiments, output_dir, label, mode_tag):
+def plot_pca_3d_scatter_cross_experiment(df_scores, experiments, output_dir, label, mode_tag, axes_limits=None):
     if 'PC3' not in df_scores.columns:
         print(f"  [{mode_tag}] Skipping 3D trajectory figure (fewer than 3 PCs).")
         return
+    if axes_limits is None:
+        axes_limits = compute_global_axes_limits(df_scores)
 
     sns.set_theme(style="whitegrid", context="talk")
     fig = plt.figure(figsize=(10, 8))
@@ -964,6 +1343,12 @@ def plot_pca_3d_scatter_cross_experiment(df_scores, experiments, output_dir, lab
     ax3d.set_zlabel("PC2")
     ax3d.set_title("3D Trajectory (grouped by experiment)", fontweight='bold')
     ax3d.view_init(elev=22, azim=-58)
+    if 'PC1' in axes_limits:
+        ax3d.set_xlim(*axes_limits['PC1'])
+    if 'PC3' in axes_limits:
+        ax3d.set_ylim(*axes_limits['PC3'])
+    if 'PC2' in axes_limits:
+        ax3d.set_zlim(*axes_limits['PC2'])
 
     plt.suptitle(f"3D Trajectory Only — Grouped by Experiment [{mode_tag}]",
                  fontsize=18, fontweight='bold')
@@ -1037,7 +1422,8 @@ def plot_significance_figure(df_sig, experiments, output_dir, label, mode_tag):
 # MAIN PIPELINE
 # ==============================================================================
 def run_pca_mode(df_features, valid_features, meta_cols, experiments, output_dir, label,
-                 mode_tag, trajectory_group_by='dox', pca_fit_basis='auto'):
+                 mode_tag, trajectory_group_by='dox', pca_fit_basis='auto',
+                 line_metric_groups=None):
     if mode_tag == 'raw':
         df_mode = normalize_composition_features(df_features, clip_fractions=True)
     elif mode_tag == 'residualized':
@@ -1114,6 +1500,7 @@ def run_pca_mode(df_features, valid_features, meta_cols, experiments, output_dir
 
     pc_cols = [f'PC{i+1}' for i in range(n_components)]
     df_group_sep = compute_pca_group_separation(df_scores, pc_cols)
+    axes_limits = compute_global_axes_limits(df_scores)
     df_dox_step_dist = compute_consecutive_dox_distances(df_scores, experiments)
     if not df_dox_step_dist.empty:
         df_dox_step_dist_summary = (
@@ -1187,23 +1574,34 @@ def run_pca_mode(df_features, valid_features, meta_cols, experiments, output_dir
 
     if trajectory_group_by == 'experiment' and len(experiments) > 1:
         plot_pca_pc1_pc2_cross_experiment(df_scores, df_loadings, pca, experiments, valid_features,
-                                      n_components, output_dir, label, mode_tag)
-        plot_pca_pc3_projections_2d_cross_experiment(df_scores, pca, experiments, output_dir, label, mode_tag)
-        plot_pca_3d_scatter_cross_experiment(df_scores, experiments, output_dir, label, mode_tag)
+                                          n_components, output_dir, label, mode_tag, axes_limits)
+        plot_pca_pc3_projections_2d_cross_experiment(df_scores, pca, experiments, output_dir, label, mode_tag, axes_limits)
+        plot_pca_3d_scatter_cross_experiment(df_scores, experiments, output_dir, label, mode_tag, axes_limits)
     else:
         if trajectory_group_by == 'experiment' and len(experiments) <= 1:
             print(f"  [{mode_tag}] trajectory-group-by=experiment requires >=2 experiments; using dox grouping.")
         plot_pca_pc1_pc2_per_experiment(df_scores, df_loadings, pca, experiments, valid_features,
-                        n_components, output_dir, label, mode_tag)
-        plot_pca_pc3_projections_2d(df_scores, pca, experiments, output_dir, label, mode_tag)
-        plot_pca_3d_scatter(df_scores, experiments, output_dir, label, mode_tag)
+                                        n_components, output_dir, label, mode_tag, axes_limits)
+        plot_pca_pc3_projections_2d(df_scores, pca, experiments, output_dir, label, mode_tag, axes_limits)
+        plot_pca_3d_scatter(df_scores, experiments, output_dir, label, mode_tag, axes_limits)
+
+    # Paper-friendly split figures (always generated)
+    plot_pca_2d_per_experiment_split(df_scores, pca, experiments, output_dir, label, mode_tag, axes_limits)
+    plot_pca_3d_per_experiment_split(df_scores, experiments, output_dir, label, mode_tag, axes_limits)
+    plot_exp2_with_exp1_overlay(df_scores, pca, output_dir, label, mode_tag, axes_limits)
+    plot_pca_scree_only(pca, n_components, output_dir, label, mode_tag)
+    plot_pca_loadings_only(df_loadings, valid_features, n_components, output_dir, label, mode_tag)
+
+    # Cross-experiment line metrics across dox (for pairwise experiment comparisons)
+    plot_line_metrics_across_dox(df_mode_imp, experiments, output_dir, label, mode_tag, line_metric_groups or [])
+
     plot_consecutive_dox_distances(df_dox_step_dist, experiments, output_dir, label, mode_tag)
     plot_significance_figure(df_sig, experiments, output_dir, label, mode_tag)
 
 
 def run_trajectory_analysis(experiments, output_dir, replicate_adjust_mode='both',
                             organoid_limit=3, trajectory_group_by='dox',
-                            pca_fit_basis='auto'):
+                            pca_fit_basis='auto', line_metric_groups=None):
     all_records = []
 
     for exp_label in experiments:
@@ -1273,7 +1671,8 @@ def run_trajectory_analysis(experiments, output_dir, replicate_adjust_mode='both
     modes = ['raw', 'residualized'] if replicate_adjust_mode == 'both' else [replicate_adjust_mode]
     for mode_tag in modes:
         run_pca_mode(df_features, valid_features, meta_cols, experiments,
-                     output_dir, label, mode_tag, trajectory_group_by, pca_fit_basis)
+                     output_dir, label, mode_tag, trajectory_group_by, pca_fit_basis,
+                     line_metric_groups)
 
 # ==============================================================================
 # MAIN EXECUTION
@@ -1302,6 +1701,9 @@ if __name__ == "__main__":
     parser.add_argument('--group-by-runtime', type=str, default='yes',
                         choices=['yes', 'no'],
                         help='Store outputs in timestamped run subfolders (default: yes).')
+    parser.add_argument('--line-metrics', nargs='+', default=['nms', 'cluster_size', 'cluster_count'],
+                        choices=['nms', 'cluster_size', 'cluster_count', 'intra_distance', 'inter_distance', 'adjacency'],
+                        help='Cross-experiment line plots across dox. Default: nms, cluster_size, cluster_count.')
 
     args = parser.parse_args()
 
@@ -1311,6 +1713,7 @@ if __name__ == "__main__":
     trajectory_group_by = args.trajectory_group_by
     pca_fit_basis = args.pca_fit_basis
     group_by_runtime = args.group_by_runtime == 'yes'
+    line_metric_groups = args.line_metrics
     label = '_'.join(experiments)
     output_subdir = f"{label}_spatial_trajectory"
     base_output_path = os.path.join(args.output_dir, output_subdir)
@@ -1325,17 +1728,19 @@ if __name__ == "__main__":
     print(f"SPATIAL STATE TRAJECTORY ANALYSIS (PCA)")
     print(f"Experiments: {', '.join(experiments)}")
     print(f"Mode: {mode}")
-    print(f"Features: Total Cells (max-norm), Endo/Meso Fraction, Radial Mean/Std (Endo/Meso), NMS, Cluster Count/Size, Intra/Inter Distance, Adjacency %")
+    print(f"Features: Total Cells, Endo/Meso Fraction, Radial Mean/Std (Endo/Meso), NMS, Cluster Count/Size, Intra/Inter Distance, Adjacency %")
     print(f"Replicate adjust: {replicate_adjust_mode}")
     print(f"Organoid limit per (replicate,dox): {organoid_limit}")
     print(f"Trajectory grouped by: {trajectory_group_by}")
     print(f"PCA fit basis: {pca_fit_basis}")
+    print(f"Line metrics: {', '.join(line_metric_groups)}")
     print(f"Group outputs by runtime: {args.group_by_runtime}")
     print(f"Output: {output_path}")
     print(f"{'='*80}\n")
 
     run_trajectory_analysis(experiments, output_path, replicate_adjust_mode,
-                            organoid_limit, trajectory_group_by, pca_fit_basis)
+                            organoid_limit, trajectory_group_by, pca_fit_basis,
+                            line_metric_groups)
 
     run_end_dt = datetime.now()
     run_elapsed_sec = time.time() - run_start_epoch
@@ -1349,6 +1754,7 @@ if __name__ == "__main__":
         fh.write(f"Organoid_Limit: {organoid_limit}\n")
         fh.write(f"Trajectory_Grouped_By: {trajectory_group_by}\n")
         fh.write(f"PCA_Fit_Basis: {pca_fit_basis}\n")
+        fh.write(f"Line_Metrics: {', '.join(line_metric_groups)}\n")
         fh.write(f"Group_By_Runtime: {args.group_by_runtime}\n")
 
     print(f"  Run metadata saved: {run_meta_file}")
