@@ -72,7 +72,7 @@ def filter_first_3_organoids(file_list):
 # ==============================================================================
 # CLUSTER PROXIMITY ANALYSIS ENGINE
 # ==============================================================================
-def calculate_cluster_kissing(df):
+def calculate_cluster_adjacency(df):
     """
     Calculate three touching metrics for Endo/Meso cluster interfaces:
     1) Minority clusters touching majority / total minority.
@@ -140,7 +140,7 @@ def calculate_cluster_kissing(df):
             'Minority_Touching_Pct': 0.0,
             'Majority_Touching_Pct': 0.0,
             'Adjacency_Density_Pct': 0.0,
-            'Kissing_Percentage': 0.0,
+            'Adjacency_Percentage': 0.0,
             'Total_Majority_Clusters': len(majority_clusters),
             'Total_Minority_Clusters': len(minority_clusters),
             'Touching_Minority_Clusters': 0,
@@ -187,7 +187,7 @@ def calculate_cluster_kissing(df):
         'Minority_Touching_Pct': minority_touching_pct,
         'Majority_Touching_Pct': majority_touching_pct,
         'Adjacency_Density_Pct': adjacency_density_pct,
-        'Kissing_Percentage': minority_touching_pct,
+        'Adjacency_Percentage': minority_touching_pct,
         'Total_Majority_Clusters': len(majority_clusters),
         'Total_Minority_Clusters': len(minority_clusters),
         'Touching_Minority_Clusters': touching_minority,
@@ -215,7 +215,7 @@ def run_proximity_analysis(base_path, exp_label, output_dir):
             dox = int(file_name.split('dox')[0])
             replicate = os.path.basename(os.path.dirname(file_path))
 
-            result = calculate_cluster_kissing(df)
+            result = calculate_cluster_adjacency(df)
             if result:
                 result.update({
                     'Dox_Concentration': dox,
@@ -324,7 +324,7 @@ def run_proximity_analysis(base_path, exp_label, output_dir):
     plt.tight_layout(rect=[0, 0.02, 1, 0.96])
 
     # Save figure
-    output_file = os.path.join(output_dir, f"{exp_label}_Cluster_Proximity_Kissing_Analysis.png")
+    output_file = os.path.join(output_dir, f"{exp_label}_Cluster_Proximity_Adjacency_Analysis.png")
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     print(f"\n✓ Figure saved to: {output_file}")
     plt.close()
@@ -349,7 +349,7 @@ def run_proximity_analysis(base_path, exp_label, output_dir):
 # MAIN EXECUTION
 # ==============================================================================
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Cluster Proximity ("Kissing") Analysis')
+    parser = argparse.ArgumentParser(description='Cluster Proximity ("Adjacency") Analysis')
     parser.add_argument('--experiment', type=str, required=True,
                         choices=['exp1', 'exp2_high_cn', 'exp2_low_cn', 'exp3'],
                         help='Which experiment dataset to analyze')
@@ -368,7 +368,7 @@ if __name__ == "__main__":
     os.makedirs(output_path, exist_ok=True)
 
     print(f"\n{'='*80}")
-    print(f"CLUSTER PROXIMITY (KISSING) ANALYSIS")
+    print(f"CLUSTER PROXIMITY (ADJACENCY) ANALYSIS")
     print(f"Dataset: {args.experiment} ({base_path})")
     print(f"Proximity Threshold: {PROXIMITY_THRESHOLD} μm")
     print(f"Output: {output_path}")

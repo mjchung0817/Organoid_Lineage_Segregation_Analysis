@@ -22,7 +22,7 @@ Predictive CN modeling is isolated under `predictive_cn_sidetrack/` and is not p
 
 ### Main figure-generation scripts
 - `src/pipeline/20260208_spatial_state_trajectory_PCA.py`
-- `src/pipeline/20260202_cluster_proximity_kissing_analysis.py`
+- `src/pipeline/20260202_cluster_proximity_adjacency_analysis.py`
 - `src/pipeline/20260208_inter_intra_cluster_distance_analysis.py`
 - `src/pipeline/cluster_analysis.py`
 - `src/pipeline/mixing_score.py`
@@ -74,8 +74,8 @@ Optional:
 - `--pca-fit-basis {auto,all_organoids,exp_dox_centroids,exp_centroids}` (default `auto`)
 - `--group-by-runtime {yes,no}` (default `yes`)
 
-### 2) Kissing / adjacency analysis
-`src/pipeline/20260202_cluster_proximity_kissing_analysis.py`
+### 2) Inter-lineage cluster adjacency analysis
+`src/pipeline/20260202_cluster_proximity_adjacency_analysis.py`
 
 Required:
 - `--experiment <exp>`
@@ -162,7 +162,7 @@ Outputs are script-specific subfolders under the chosen `--output-dir` (default 
 
 Examples:
 - `results/<exp>_cluster_proximity/`
-  - `<exp>_Cluster_Proximity_Kissing_Analysis.png`
+  - `<exp>_Cluster_Proximity_Adjacency_Analysis.png`
   - `<exp>_Cluster_Proximity_Organoid_Level.csv`
   - `<exp>_Cluster_Proximity_Panel1_Methods.csv`
   - `<exp>_Cluster_Proximity_Panel2_Minority_Frequency.csv`
@@ -214,7 +214,7 @@ python src/pipeline/delta_analysis.py \
   --trend-experiments exp1 exp2_high_cn exp2_low_cn \
   --line-metrics nms cluster_size cluster_count
 
-python src/pipeline/20260202_cluster_proximity_kissing_analysis.py --experiment exp1
+python src/pipeline/20260202_cluster_proximity_adjacency_analysis.py --experiment exp1
 python src/pipeline/20260208_inter_intra_cluster_distance_analysis.py --experiment exp1
 python src/pipeline/cluster_analysis.py --experiment exp1
 python src/pipeline/z_biopsy_visualization.py --experiment exp1

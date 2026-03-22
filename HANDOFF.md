@@ -5,7 +5,7 @@
 - The pipeline now supports multi-experiment comparison in a shared PCA space, optional replicate residualization, runtime-grouped outputs, flexible trajectory grouping, and flexible PCA fit basis.
 - Endo/Meso-only analysis is now the standard in active scripts (triple-negative/pluripotent excluded from core metrics and exports in updated scripts).
 - Paper-facing scripts now export plot-ready CSVs (not just PNG figures).
-- Kissing/proximity analysis now includes three inter-lineage touching definitions in the left panel and CSV outputs.
+- Adjacency/proximity analysis now includes three inter-lineage touching definitions in the left panel and CSV outputs.
 
 ## 2) Architectural Decisions
 - Shared dataset registry: scripts use a common `DATASET_MAP` pattern (`exp1`, `exp2_high_cn`, `exp2_low_cn`, `exp3`).
@@ -113,14 +113,14 @@
 
 ## 7) Paper-Support Script Status (CSV exports)
 Updated scripts targeted for manuscript figure recreation now emit CSV data for mentor-side visualization cleanup:
-- `20260202_cluster_proximity_kissing_analysis.py`
+- `20260202_cluster_proximity_adjacency_analysis.py`
 - `20260208_inter_intra_cluster_distance_analysis.py`
 - `20260120_organoid_dbscan_cluster_size_and_inter_distance_analysis.py`
 - `2025_0124_delta_analysis_nms_dbscan_cluster.py`
 - `20251218_image_confined_z_biopsy_visualization_and_nms_heatmap_v2.py`
 - `20251213_calc_nms_replicates_v2.py`
 
-Kissing script now reports three adjacency formulations:
+Adjacency script now reports three adjacency formulations:
 - minority touching / total minority
 - majority touching / total majority
 - bipartite adjacency density `sum(A_endo,meso) / (N_endo * N_meso)`
