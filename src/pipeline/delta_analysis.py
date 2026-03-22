@@ -11,6 +11,7 @@ from scipy.spatial import KDTree
 from scipy.spatial.distance import pdist
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 
 # ==============================================================================
 # DATASET MAPPING
@@ -32,14 +33,42 @@ ERRORBAR_LABELS = {
     'none': 'No Error Bar'
 }
 
+EXP_MARKERS = {
+    'exp1': 'o',
+    'exp2_low_cn': '^',
+    'exp2_high_cn': 'd',
+    'exp3': 'D',
+}
+
+DISPLAY_NAMES = {
+    'nms_Endo': 'NMS (Endo)',
+    'nms_Meso': 'NMS (Meso)',
+    'avg_size_Endo': 'Cluster Size (Endo)',
+    'avg_size_Meso': 'Cluster Size (Meso)',
+    'count_Endo': 'Cluster Count (Endo)',
+    'count_Meso': 'Cluster Count (Meso)',
+    'separation_Endo': 'Intra Dist (Endo)',
+    'separation_Meso': 'Intra Dist (Meso)',
+}
+
+LINE_METRIC_GROUPS = {
+    'nms': [('nms_Endo', 'Endo'), ('nms_Meso', 'Meso')],
+    'cluster_size': [('avg_size_Endo', 'Endo'), ('avg_size_Meso', 'Meso')],
+    'cluster_count': [('count_Endo', 'Endo'), ('count_Meso', 'Meso')],
+    'intra_distance': [('separation_Endo', 'Endo'), ('separation_Meso', 'Meso')],
+}
+
 # ==============================================================================
 # HELPER: FILTER TO FIRST 3 ORGANOIDS PER REPLICATE PER CONDITION
 # ==============================================================================
-def filter_first_3_organoids(file_list):
+def filter_first_3_organoids(file_list, n_limit=3):
     """
     Group files by replicate, dox, and condition, then keep only the first
-    3 organoids numerically within each group.
+    n_limit organoids numerically within each group.
     """
+    if n_limit is None or n_limit <= 0:
+        return sorted(file_list)
+
     grouped = {}
     for fpath in file_list:
         fname = os.path.basename(fpath)
@@ -66,7 +95,7 @@ def filter_first_3_organoids(file_list):
     filtered = []
     for key, files in grouped.items():
         files_sorted = sorted(files, key=lambda x: x[0])
-        filtered.extend([fpath for _, fpath in files_sorted[:3]])
+        filtered.extend([fpath for _, fpath in files_sorted[:n_limit]])
 
     return filtered
 
@@ -149,6 +178,131 @@ def resolve_errorbar(errorbar_mode):
     if errorbar_mode == 'none':
         return None
     raise ValueError(f"Unsupported errorbar mode: {errorbar_mode}")
+
+
+def run_cross_experiment_line_metrics(experiments, output_dir,
+                                      line_metric_groups=None, organoid_limit=3):
+    """
+    Plot raw feature trends across dox for multiple experiments.
+    This is a metric-level comparison mode (not PCA).
+    """
+    metric_keys = line_metric_groups or ['nms', 'cluster_size', 'cluster_count']
+    exp_present = [e for e in experiments if e in DATASET_MAP]
+    if len(exp_present) < 2:
+        print("Need at least 2 experiments for cross-experiment line metrics.")
+        return
+
+    rows = []
+    for exp in exp_present:
+        mapped_path = DATASET_MAP[exp]
+        base_path = mapped_path if os.path.isabs(mapped_path) else os.path.join(PROJECT_ROOT, mapped_path)
+        all_files = glob.glob(os.path.join(base_path, "**/*.csv"), recursive=True)
+        files = filter_first_3_organoids(all_files, n_limit=organoid_limit)
+        print(f"{exp}: Processing {len(files)} organoids (limit={organoid_limit}, total={len(all_files)})")
+
+        for f in files:
+            fname = os.path.basename(f)
+            dox_match = re.search(r"(\d+)dox", fname)
+            if not dox_match:
+                continue
+            dose = int(dox_match.group(1))
+            metrics = get_spatial_metrics(pd.read_csv(f))
+            if not metrics:
+                continue
+
+            rows.append({
+                'Experiment': exp,
+                'Dox_Concentration': dose,
+                'Replicate': os.path.basename(os.path.dirname(f)),
+                'File': fname,
+                **metrics,
+            })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        print("No data available for cross-experiment line metrics.")
+        return
+
+    label = '_'.join(exp_present)
+    raw_csv = os.path.join(output_dir, f"{label}_LineMetrics_organoid_level.csv")
+    df.to_csv(raw_csv, index=False)
+    print(f"✓ Data saved: {raw_csv}")
+
+    cmap_exp = plt.cm.tab10
+    exp_colors = {exp: cmap_exp(i % 10) for i, exp in enumerate(exp_present)}
+    pairwise_rows = []
+
+    for mkey in metric_keys:
+        feat_pairs = LINE_METRIC_GROUPS.get(mkey, [])
+        for feat, lineage in feat_pairs:
+            if feat not in df.columns:
+                continue
+
+            plot_df = df[['Experiment', 'Dox_Concentration', feat]].dropna(subset=[feat])
+            if plot_df.empty:
+                continue
+
+            agg = (plot_df.groupby(['Experiment', 'Dox_Concentration'])[feat]
+                   .agg(mean='mean', sd='std', n='count')
+                   .reset_index())
+            agg['sem'] = agg['sd'] / np.sqrt(agg['n'].clip(lower=1))
+
+            # Pairwise mean differences at each dox.
+            dox_vals = sorted(agg['Dox_Concentration'].unique())
+            for dox in dox_vals:
+                at_dox = agg[agg['Dox_Concentration'] == dox]
+                for i in range(len(exp_present)):
+                    for j in range(i + 1, len(exp_present)):
+                        ea, eb = exp_present[i], exp_present[j]
+                        va = at_dox.loc[at_dox['Experiment'] == ea, 'mean']
+                        vb = at_dox.loc[at_dox['Experiment'] == eb, 'mean']
+                        if va.empty or vb.empty:
+                            continue
+                        pairwise_rows.append({
+                            'Metric_Group': mkey,
+                            'Feature': feat,
+                            'Lineage': lineage,
+                            'Dox_Concentration': dox,
+                            'Experiment_A': ea,
+                            'Experiment_B': eb,
+                            'Mean_Diff_A_minus_B': float(va.iloc[0] - vb.iloc[0]),
+                        })
+
+            sns.set_theme(style="whitegrid", context="talk")
+            fig, ax = plt.subplots(figsize=(8.2, 5.8))
+            for exp in exp_present:
+                exp_agg = agg[agg['Experiment'] == exp].sort_values('Dox_Concentration')
+                if exp_agg.empty:
+                    continue
+                x = exp_agg['Dox_Concentration'].values
+                y = exp_agg['mean'].values
+                se = exp_agg['sem'].fillna(0).values
+                marker = EXP_MARKERS.get(exp, 'o')
+                ax.plot(x, y, marker=marker, markersize=7, linewidth=2.1,
+                        color=exp_colors[exp], label=exp)
+                ax.fill_between(x, y - se, y + se, color=exp_colors[exp], alpha=0.14)
+
+            ylab = DISPLAY_NAMES.get(feat, feat)
+            ax.set_title(f"{ylab} across dox ({lineage})", fontweight='bold')
+            ax.set_xlabel("Dox concentration (ng/mL)")
+            ax.set_ylabel(ylab)
+            ax.legend(title="Experiment", loc='best', fontsize=9, title_fontsize=10)
+            ax.set_xticks(sorted(agg['Dox_Concentration'].unique()))
+            plt.tight_layout()
+
+            out_png = os.path.join(output_dir, f"{label}_Line_{feat}.png")
+            plt.savefig(out_png, dpi=300, bbox_inches='tight')
+            print(f"✓ Saved: {out_png}")
+            plt.close(fig)
+
+            out_csv = os.path.join(output_dir, f"{label}_Line_{feat}_summary.csv")
+            agg.to_csv(out_csv, index=False)
+            print(f"✓ Data saved: {out_csv}")
+
+    if pairwise_rows:
+        pair_csv = os.path.join(output_dir, f"{label}_LineMetrics_pairwise_mean_diffs.csv")
+        pd.DataFrame(pairwise_rows).to_csv(pair_csv, index=False)
+        print(f"✓ Data saved: {pair_csv}")
 
 # ==============================================================================
 # MAIN COMPARISON FUNCTION
@@ -396,12 +550,12 @@ def run_delta_analysis(baseline_path, baseline_label, treatment_path, treatment_
 # ==============================================================================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Delta Analysis: % Change Comparison Between Experiments')
-    parser.add_argument('--baseline', type=str, required=True,
+    parser.add_argument('--baseline', type=str, required=False,
                         choices=['exp1', 'exp2_high_cn', 'exp2_low_cn', 'exp3'],
-                        help='Baseline experiment dataset')
-    parser.add_argument('--treatment', type=str, required=True,
+                        help='Baseline experiment dataset (required in delta mode).')
+    parser.add_argument('--treatment', type=str, required=False,
                         choices=['exp1', 'exp2_high_cn', 'exp2_low_cn', 'exp3'],
-                        help='Treatment experiment dataset')
+                        help='Treatment experiment dataset (required in delta mode).')
     parser.add_argument('--output-dir', type=str, default='results',
                         help='Base output directory (default: results)')
     parser.add_argument('--errorbar-mode', type=str, default='sd',
@@ -409,35 +563,68 @@ if __name__ == "__main__":
                         help='Bar error bar type: sd, se, ci95, or none (default: sd)')
     parser.add_argument('--no-save-nms-only', action='store_true',
                         help='Disable saving the dedicated NMS-only delta plot')
+    parser.add_argument('--trend-experiments', nargs='+',
+                        choices=['exp1', 'exp2_high_cn', 'exp2_low_cn', 'exp3'],
+                        help='Enable cross-experiment metric line-plot mode across dox.')
+    parser.add_argument('--line-metrics', nargs='+',
+                        default=['nms', 'cluster_size', 'cluster_count'],
+                        choices=['nms', 'cluster_size', 'cluster_count', 'intra_distance'],
+                        help='Metric groups to plot in trend mode.')
+    parser.add_argument('--organoid-limit', type=int, default=3,
+                        help='Organoids per (replicate,dox,condition) in trend mode. <=0 uses all.')
 
     args = parser.parse_args()
 
-    # Get dataset paths
-    baseline_mapped = DATASET_MAP[args.baseline]
-    treatment_mapped = DATASET_MAP[args.treatment]
-    baseline_path = baseline_mapped if os.path.isabs(baseline_mapped) else os.path.join(SCRIPT_DIR, baseline_mapped)
-    treatment_path = treatment_mapped if os.path.isabs(treatment_mapped) else os.path.join(SCRIPT_DIR, treatment_mapped)
+    if args.trend_experiments:
+        exp_list = args.trend_experiments
+        label = "_".join(exp_list)
+        output_subdir = f"{label}_cross_experiment_line_metrics"
+        output_path = os.path.join(args.output_dir, output_subdir)
+        os.makedirs(output_path, exist_ok=True)
 
-    # Create output directory
-    output_subdir = f"{args.baseline}_vs_{args.treatment}_delta_analysis"
-    output_path = os.path.join(args.output_dir, output_subdir)
-    os.makedirs(output_path, exist_ok=True)
+        print(f"\n{'='*80}")
+        print("CROSS-EXPERIMENT METRIC LINE PLOTS (ACROSS DOX)")
+        print(f"Experiments: {', '.join(exp_list)}")
+        print(f"Line metrics: {', '.join(args.line_metrics)}")
+        print(f"Organoid limit per (replicate,dox,condition): {args.organoid_limit}")
+        print(f"Output: {output_path}")
+        print(f"{'='*80}\n")
 
-    print(f"\n{'='*80}")
-    print(f"DELTA ANALYSIS: % CHANGE COMPARISON")
-    print(f"Baseline: {args.baseline} ({baseline_path})")
-    print(f"Treatment: {args.treatment} ({treatment_path})")
-    print(f"Output: {output_path}")
-    print(f"{'='*80}\n")
+        run_cross_experiment_line_metrics(
+            exp_list,
+            output_path,
+            line_metric_groups=args.line_metrics,
+            organoid_limit=args.organoid_limit
+        )
+        print(f"\n✓ Cross-experiment line metrics saved to: {output_path}")
+    else:
+        if not args.baseline or not args.treatment:
+            parser.error("--baseline and --treatment are required unless --trend-experiments is provided.")
 
-    run_delta_analysis(
-        baseline_path,
-        args.baseline,
-        treatment_path,
-        args.treatment,
-        output_path,
-        errorbar_mode=args.errorbar_mode,
-        save_nms_only=not args.no_save_nms_only
-    )
+        baseline_mapped = DATASET_MAP[args.baseline]
+        treatment_mapped = DATASET_MAP[args.treatment]
+        baseline_path = baseline_mapped if os.path.isabs(baseline_mapped) else os.path.join(PROJECT_ROOT, baseline_mapped)
+        treatment_path = treatment_mapped if os.path.isabs(treatment_mapped) else os.path.join(PROJECT_ROOT, treatment_mapped)
 
-    print(f"\n✓ All delta analysis plots saved to: {output_path}")
+        output_subdir = f"{args.baseline}_vs_{args.treatment}_delta_analysis"
+        output_path = os.path.join(args.output_dir, output_subdir)
+        os.makedirs(output_path, exist_ok=True)
+
+        print(f"\n{'='*80}")
+        print(f"DELTA ANALYSIS: % CHANGE COMPARISON")
+        print(f"Baseline: {args.baseline} ({baseline_path})")
+        print(f"Treatment: {args.treatment} ({treatment_path})")
+        print(f"Output: {output_path}")
+        print(f"{'='*80}\n")
+
+        run_delta_analysis(
+            baseline_path,
+            args.baseline,
+            treatment_path,
+            args.treatment,
+            output_path,
+            errorbar_mode=args.errorbar_mode,
+            save_nms_only=not args.no_save_nms_only
+        )
+
+        print(f"\n✓ All delta analysis plots saved to: {output_path}")

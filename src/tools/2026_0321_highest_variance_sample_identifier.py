@@ -7,9 +7,8 @@ from collections import defaultdict
 # ==============================================================================
 # CONFIG
 # ==============================================================================
-# When run from the root analysis folder, SCRIPT_DIR is the root.
-# When still inside GATA-HA-BMP4+Wnt5a_Ex3, it targets only that experiment.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 
 CELL_TYPE_COL     = 'cell_type_dapi_adusted'   # typo present in dataset (no 'j')
 CELL_TYPE_COL_ALT = 'cell_type_dapi_adjusted'
@@ -162,7 +161,7 @@ def run(root_dir, cell_type_col, max_samples, dry_run):
 
 if __name__ == '__main__':
     run(
-        root_dir=SCRIPT_DIR,
+        root_dir=PROJECT_ROOT,
         cell_type_col=CELL_TYPE_COL,
         max_samples=MAX_SAMPLES,
         dry_run=DRY_RUN,

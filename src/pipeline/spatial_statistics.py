@@ -11,6 +11,9 @@ from libpysal.weights import DistanceBand
 from sklearn.decomposition import PCA
 from sklearn.cluster import DBSCAN
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+
 # ==============================================================================
 # DATASET MAPPING
 # ==============================================================================
@@ -182,7 +185,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Get dataset path
-    base_path = DATASET_MAP[args.experiment]
+    mapped_path = DATASET_MAP[args.experiment]
+    base_path = mapped_path if os.path.isabs(mapped_path) else os.path.join(PROJECT_ROOT, mapped_path)
 
     # Create output directory
     output_subdir = f"{args.experiment}_moransI_sPCA"

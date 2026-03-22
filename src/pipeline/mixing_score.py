@@ -9,6 +9,7 @@ import argparse
 from scipy.spatial import KDTree
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 
 # ==============================================================================
 # DATASET MAPPING
@@ -250,8 +251,8 @@ if __name__ == "__main__":
     # Get dataset paths
     baseline_mapped = DATASET_MAP[args.baseline]
     treatment_mapped = DATASET_MAP[args.treatment]
-    baseline_path = baseline_mapped if os.path.isabs(baseline_mapped) else os.path.join(SCRIPT_DIR, baseline_mapped)
-    treatment_path = treatment_mapped if os.path.isabs(treatment_mapped) else os.path.join(SCRIPT_DIR, treatment_mapped)
+    baseline_path = baseline_mapped if os.path.isabs(baseline_mapped) else os.path.join(PROJECT_ROOT, baseline_mapped)
+    treatment_path = treatment_mapped if os.path.isabs(treatment_mapped) else os.path.join(PROJECT_ROOT, treatment_mapped)
 
     # Create output directory
     output_subdir = f"{args.baseline}_vs_{args.treatment}_nms_comparison"

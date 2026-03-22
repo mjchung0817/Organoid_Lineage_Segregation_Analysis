@@ -448,7 +448,7 @@ def stable_row_seed(base_seed: int, key: str) -> int:
 
 
 def load_spatial_module(project_root: str):
-    module_path = os.path.join(project_root, '20260208_spatial_state_trajectory_PCA.py')
+    module_path = os.path.join(project_root, 'src', 'pipeline', '20260208_spatial_state_trajectory_PCA.py')
     if not os.path.exists(module_path):
         raise FileNotFoundError(f"Cannot find spatial PCA script at: {module_path}")
 

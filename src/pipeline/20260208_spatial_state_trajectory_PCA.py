@@ -18,6 +18,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 
 # ==============================================================================
 # DATASET MAPPING
@@ -65,15 +66,6 @@ LOADINGS_GROUPS = [
                        'NMS_Endo', 'Cluster_Count_Endo', 'Cluster_Size_Endo',
                        'Intra_Distance_Endo']),
 ]
-
-LINE_METRIC_GROUPS = {
-    'nms': [('NMS_Endo', 'Endo'), ('NMS_Meso', 'Meso')],
-    'cluster_size': [('Cluster_Size_Endo', 'Endo'), ('Cluster_Size_Meso', 'Meso')],
-    'cluster_count': [('Cluster_Count_Endo', 'Endo'), ('Cluster_Count_Meso', 'Meso')],
-    'intra_distance': [('Intra_Distance_Endo', 'Endo'), ('Intra_Distance_Meso', 'Meso')],
-    'inter_distance': [('Inter_Distance', 'All')],
-    'adjacency': [('Adjacency_Pct', 'All')],
-}
 
 # ==============================================================================
 # HELPER: FILTER TO FIRST N ORGANOIDS PER REPLICATE PER CONDITION
@@ -800,91 +792,6 @@ def plot_exp2_with_exp1_overlay(df_scores, pca, output_dir, label, mode_tag, axe
             plt.close(fig3)
 
 
-def plot_line_metrics_across_dox(df_mode_imp, experiments, output_dir, label, mode_tag, line_metric_groups):
-    metric_keys = line_metric_groups
-    if not metric_keys:
-        return
-
-    exp_present = [e for e in experiments if e in set(df_mode_imp['Experiment'].unique())]
-    if len(exp_present) < 2:
-        return
-
-    cmap_exp = plt.cm.tab10
-    exp_colors = {exp: cmap_exp(i % 10) for i, exp in enumerate(exp_present)}
-
-    pairwise_rows = []
-    for mkey in metric_keys:
-        pairs = LINE_METRIC_GROUPS.get(mkey, [])
-        for feat, lineage in pairs:
-            if feat not in df_mode_imp.columns:
-                continue
-
-            plot_df = df_mode_imp[['Experiment', 'Dox_Concentration', feat]].copy()
-            plot_df = plot_df.dropna(subset=[feat])
-            if plot_df.empty:
-                continue
-
-            agg = (plot_df.groupby(['Experiment', 'Dox_Concentration'])[feat]
-                   .agg(mean='mean', sd='std', n='count')
-                   .reset_index())
-            agg['sem'] = agg['sd'] / np.sqrt(agg['n'].clip(lower=1))
-
-            # Pairwise experiment differences at each dox (saved to CSV).
-            dox_vals = sorted(agg['Dox_Concentration'].unique())
-            for dox in dox_vals:
-                at_dox = agg[agg['Dox_Concentration'] == dox]
-                for i in range(len(exp_present)):
-                    for j in range(i + 1, len(exp_present)):
-                        ea, eb = exp_present[i], exp_present[j]
-                        va = at_dox.loc[at_dox['Experiment'] == ea, 'mean']
-                        vb = at_dox.loc[at_dox['Experiment'] == eb, 'mean']
-                        if va.empty or vb.empty:
-                            continue
-                        pairwise_rows.append({
-                            'Metric_Group': mkey,
-                            'Feature': feat,
-                            'Lineage': lineage,
-                            'Dox_Concentration': dox,
-                            'Experiment_A': ea,
-                            'Experiment_B': eb,
-                            'Mean_Diff_A_minus_B': float(va.iloc[0] - vb.iloc[0]),
-                        })
-
-            sns.set_theme(style="whitegrid", context="talk")
-            fig, ax = plt.subplots(figsize=(8.0, 5.6))
-            for exp in exp_present:
-                exp_agg = agg[agg['Experiment'] == exp].sort_values('Dox_Concentration')
-                if exp_agg.empty:
-                    continue
-                x = exp_agg['Dox_Concentration'].values
-                y = exp_agg['mean'].values
-                se = exp_agg['sem'].fillna(0).values
-                marker = EXP_MARKERS.get(exp, 'o')
-                ax.plot(x, y, marker=marker, markersize=6.8, linewidth=2.0,
-                        color=exp_colors[exp], label=exp)
-                ax.fill_between(x, y - se, y + se, color=exp_colors[exp], alpha=0.14)
-
-            ylab = DISPLAY_NAMES.get(feat, feat)
-            ax.set_title(f"{ylab} across dox ({lineage}) [{mode_tag}]", fontweight='bold')
-            ax.set_xlabel("Dox concentration (ng/mL)")
-            ax.set_ylabel(ylab)
-            ax.legend(title="Experiment", loc='best', fontsize=9, title_fontsize=10)
-            ax.set_xticks(sorted(agg['Dox_Concentration'].unique()))
-            plt.tight_layout()
-            out_png = os.path.join(output_dir, f"{label}_{mode_tag}_Line_{feat}.png")
-            plt.savefig(out_png, dpi=300, bbox_inches='tight')
-            print(f"  Line metric plot saved: {out_png}")
-            plt.close(fig)
-
-            out_csv = os.path.join(output_dir, f"{label}_{mode_tag}_Line_{feat}_summary.csv")
-            agg.to_csv(out_csv, index=False)
-
-    if pairwise_rows:
-        df_pair = pd.DataFrame(pairwise_rows)
-        out_pair = os.path.join(output_dir, f"{label}_{mode_tag}_LineMetrics_pairwise_mean_diffs.csv")
-        df_pair.to_csv(out_pair, index=False)
-        print(f"  Pairwise line-metric mean differences saved: {out_pair}")
-
 # ==============================================================================
 # VISUALIZATION: MAIN PCA FIGURE
 # ==============================================================================
@@ -1422,8 +1329,7 @@ def plot_significance_figure(df_sig, experiments, output_dir, label, mode_tag):
 # MAIN PIPELINE
 # ==============================================================================
 def run_pca_mode(df_features, valid_features, meta_cols, experiments, output_dir, label,
-                 mode_tag, trajectory_group_by='dox', pca_fit_basis='auto',
-                 line_metric_groups=None):
+                 mode_tag, trajectory_group_by='dox', pca_fit_basis='auto'):
     if mode_tag == 'raw':
         df_mode = normalize_composition_features(df_features, clip_fractions=True)
     elif mode_tag == 'residualized':
@@ -1592,21 +1498,18 @@ def run_pca_mode(df_features, valid_features, meta_cols, experiments, output_dir
     plot_pca_scree_only(pca, n_components, output_dir, label, mode_tag)
     plot_pca_loadings_only(df_loadings, valid_features, n_components, output_dir, label, mode_tag)
 
-    # Cross-experiment line metrics across dox (for pairwise experiment comparisons)
-    plot_line_metrics_across_dox(df_mode_imp, experiments, output_dir, label, mode_tag, line_metric_groups or [])
-
     plot_consecutive_dox_distances(df_dox_step_dist, experiments, output_dir, label, mode_tag)
     plot_significance_figure(df_sig, experiments, output_dir, label, mode_tag)
 
 
 def run_trajectory_analysis(experiments, output_dir, replicate_adjust_mode='both',
                             organoid_limit=3, trajectory_group_by='dox',
-                            pca_fit_basis='auto', line_metric_groups=None):
+                            pca_fit_basis='auto'):
     all_records = []
 
     for exp_label in experiments:
         mapped_path = DATASET_MAP[exp_label]
-        base_path = mapped_path if os.path.isabs(mapped_path) else os.path.join(SCRIPT_DIR, mapped_path)
+        base_path = mapped_path if os.path.isabs(mapped_path) else os.path.join(PROJECT_ROOT, mapped_path)
         if not os.path.isdir(base_path):
             print(f"\n  [{exp_label}] Dataset folder not found: {base_path}")
             continue
@@ -1671,8 +1574,7 @@ def run_trajectory_analysis(experiments, output_dir, replicate_adjust_mode='both
     modes = ['raw', 'residualized'] if replicate_adjust_mode == 'both' else [replicate_adjust_mode]
     for mode_tag in modes:
         run_pca_mode(df_features, valid_features, meta_cols, experiments,
-                     output_dir, label, mode_tag, trajectory_group_by, pca_fit_basis,
-                     line_metric_groups)
+                     output_dir, label, mode_tag, trajectory_group_by, pca_fit_basis)
 
 # ==============================================================================
 # MAIN EXECUTION
@@ -1701,9 +1603,6 @@ if __name__ == "__main__":
     parser.add_argument('--group-by-runtime', type=str, default='yes',
                         choices=['yes', 'no'],
                         help='Store outputs in timestamped run subfolders (default: yes).')
-    parser.add_argument('--line-metrics', nargs='+', default=['nms', 'cluster_size', 'cluster_count'],
-                        choices=['nms', 'cluster_size', 'cluster_count', 'intra_distance', 'inter_distance', 'adjacency'],
-                        help='Cross-experiment line plots across dox. Default: nms, cluster_size, cluster_count.')
 
     args = parser.parse_args()
 
@@ -1713,7 +1612,6 @@ if __name__ == "__main__":
     trajectory_group_by = args.trajectory_group_by
     pca_fit_basis = args.pca_fit_basis
     group_by_runtime = args.group_by_runtime == 'yes'
-    line_metric_groups = args.line_metrics
     label = '_'.join(experiments)
     output_subdir = f"{label}_spatial_trajectory"
     base_output_path = os.path.join(args.output_dir, output_subdir)
@@ -1733,14 +1631,12 @@ if __name__ == "__main__":
     print(f"Organoid limit per (replicate,dox): {organoid_limit}")
     print(f"Trajectory grouped by: {trajectory_group_by}")
     print(f"PCA fit basis: {pca_fit_basis}")
-    print(f"Line metrics: {', '.join(line_metric_groups)}")
     print(f"Group outputs by runtime: {args.group_by_runtime}")
     print(f"Output: {output_path}")
     print(f"{'='*80}\n")
 
     run_trajectory_analysis(experiments, output_path, replicate_adjust_mode,
-                            organoid_limit, trajectory_group_by, pca_fit_basis,
-                            line_metric_groups)
+                            organoid_limit, trajectory_group_by, pca_fit_basis)
 
     run_end_dt = datetime.now()
     run_elapsed_sec = time.time() - run_start_epoch
@@ -1754,7 +1650,6 @@ if __name__ == "__main__":
         fh.write(f"Organoid_Limit: {organoid_limit}\n")
         fh.write(f"Trajectory_Grouped_By: {trajectory_group_by}\n")
         fh.write(f"PCA_Fit_Basis: {pca_fit_basis}\n")
-        fh.write(f"Line_Metrics: {', '.join(line_metric_groups)}\n")
         fh.write(f"Group_By_Runtime: {args.group_by_runtime}\n")
 
     print(f"  Run metadata saved: {run_meta_file}")

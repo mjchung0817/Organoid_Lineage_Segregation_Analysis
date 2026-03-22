@@ -15,6 +15,7 @@ except ImportError:
     DBSCAN = None
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 
 # ==============================================================================
 # DATASET MAPPING
@@ -287,7 +288,7 @@ if __name__ == "__main__":
 
     # Get dataset path
     mapped_path = DATASET_MAP[args.experiment]
-    base_path = mapped_path if os.path.isabs(mapped_path) else os.path.join(SCRIPT_DIR, mapped_path)
+    base_path = mapped_path if os.path.isabs(mapped_path) else os.path.join(PROJECT_ROOT, mapped_path)
 
     # Create output directory
     output_subdir = f"{args.experiment}_dbscan_cluster_analysis"
